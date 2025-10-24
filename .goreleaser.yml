@@ -1,0 +1,15 @@
+project_name: sdexmon
+builds:
+  - main: ./cmd/sdexmon
+    binary: sdexmon
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - "-s -w"
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+release:
+  github:
+    owner: sdexmon
+    name: sdexmon
