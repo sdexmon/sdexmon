@@ -1,6 +1,6 @@
 project_name: sdexmon
 builds:
-  - main: ./cmd/sdexmon
+  - main: .
     binary: sdexmon
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]

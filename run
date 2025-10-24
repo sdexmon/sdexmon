@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Load local .env if present (exports variables for this session)
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+# Safe defaults for running the TUI
+# Configure Horizon endpoint. You can override by exporting HORIZON_URL.
+export HORIZON_URL="${HORIZON_URL:-https://horizon.stellar.org}"
+
+# Enable debug mode
+export DEBUG="true"
+
+# Optionally predefine assets as 'native' or 'CODE:ISSUER'
+# export BASE_ASSET="native"
+# export QUOTE_ASSET="USDC:GA...ISSUER_HERE" # set your issuer
+
+# Build cache modules if needed and run
+if ! command -v go >/dev/null 2>&1; then
+  echo "Go toolchain not found. Please install Go 1.21+." >&2
+  exit 1
+fi
+
+# Set fixed terminal size (140 columns x 60 rows)
+if command -v tput >/dev/null 2>&1; then
+  printf '\e[8;60;140t'
+fi
+
+exec go run .
