@@ -12,3 +12,11 @@ View order books, monitor liquidity pools, and follow live trades — directly i
 brew install sdexmon
 sdexmon
 ```
+### Features
+- 📊 Orderbook and trades viewer
+- 💧 Liquidity pool analytics
+- ⚙️ Built with Bubble Tea & Lip Gloss (Go TUI)
+- ⚡ Powered by Horizon RPC / Stellar API
+
+### Website
+https://sdexmon.host
