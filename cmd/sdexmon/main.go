@@ -912,9 +912,9 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 		}
 	}
 
-	// Always render exactly 5 rows
+	// Always render exactly 10 rows
 	barWidth := 12
-	maxDisplay := 5
+	maxDisplay := 10
 	for i := 0; i < maxDisplay; i++ {
 		if i < len(entries) {
 			e := entries[i]
@@ -943,7 +943,7 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 			line := lipgloss.JoinHorizontal(lipgloss.Top, pairStr, "  ", amtFormatted, " ", bar)
 			lines = append(lines, line)
 		} else {
-			// Pad with empty line if fewer than 5 pools
+			// Pad with empty line if fewer than 10 pools
 			lines = append(lines, "")
 		}
 	}
