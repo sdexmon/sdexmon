@@ -38,6 +38,16 @@ Key files:
   ```
   Then run with `./sdexmon`.
 
+- Build with version info:
+  ```bash
+  go build -o sdexmon -ldflags="-X main.gitCommit=$(git rev-parse --short HEAD)" ./cmd/sdexmon
+  ```
+
+- Check version:
+  ```bash
+  ./sdexmon --version
+  ```
+
 - Format and basic lint:
   ```bash
   go fmt ./...
@@ -76,27 +86,33 @@ These environment variables are read at runtime:
 ## Architecture and data flow
 
 - Bubble Tea program in `main.go`
-  - **Routing**: State machine with 8 screens (Service Selection, Select Pair, Pair Input, Pair Info, Pair Debug, Select Asset, View Exposure, Exposure Debug)
+  - **Routing**: State machine with 9 screens (Landing, Service Selection, Select Pair, Pair Input, Pair Info, Pair Debug, Select Asset, View Exposure, Exposure Debug)
   - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, exposure pools, UI state
   - **Init**: when base/quote are set, schedules three tickers (order book, trades, LP)
   - **Update**: Screen-based navigation state machine
+    - Landing: Displays sdexmon ASCII art with version and commit info
     - Service Selection: choose between pair monitoring or asset exposure
     - Pair screens: Horizon polling via `fetchOrderbookCmd`, `fetchTradesCmd`, `resolveAndFetchLPCmd`
     - Asset screens: Exposure fetching via `fetchExposureCmd` (searches liquidityPoolIDs map)
   - **View**: Router switches on currentScreen to render appropriate view
-    - All screens: SCAR AQUILA header, subtitle, content, context-aware footer
+    - Landing: sdexmon ASCII branding with version display (top-left)
+    - All other screens: SCAR AQUILA header, subtitle, content, context-aware footer
     - Pair Info: Three panels (Order Book, Trades, Liquidity Pool)
     - View Exposure: Lists all LPs containing selected asset
 
 ## Navigation Flow
 
 ```
-./run → Service Selection
+./run → Landing → Service Selection
   ├─ [1] Select Pair → Pair Info ⇄ Pair Debug
   └─ [2] Select Asset → View Exposure ⇄ Exposure Debug
 ```
 
 ## UI Controls
+
+### Landing Screen
+- `enter` (⏎): Continue to service selection
+- `q`: Quit
 
 ### Service Selection
 - `1`: View asset pairs

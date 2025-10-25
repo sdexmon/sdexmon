@@ -27,6 +27,7 @@ const (
 	orderbookInterval = 1200 * time.Millisecond
 	tradesInterval    = 1200 * time.Millisecond
 	lpInterval        = 30 * time.Second
+	networkInterval   = 10 * time.Second // poll network stats every 10 seconds
 	maxTradesKept     = 120
 )
 
@@ -34,7 +35,8 @@ const (
 type screenState int
 
 const (
-	screenServiceSelection screenState = iota
+	screenLanding screenState = iota
+	screenServiceSelection
 	screenSelectPair
 	screenPairInfo
 	screenPairDebug
@@ -51,6 +53,20 @@ const asciiAquila = `███████  ██████  █████ 
 ███████  ██████ ██   ██ ██   ██     ██   ██  ██████   ██████  ██ ███████ ██   ██ 
                                                 ▀▀                               
                                                                                  `
+
+const asciiSdexmon = `                  ░██                                                                         
+                  ░██                                                                         
+ ░███████   ░████████  ░███████  ░██    ░██ ░█████████████   ░███████  ░████████              
+░██        ░██    ░██ ░██    ░██  ░██  ░██  ░██   ░██   ░██ ░██    ░██ ░██    ░██             
+ ░███████  ░██    ░██ ░█████████   ░█████   ░██   ░██   ░██ ░██    ░██ ░██    ░██             
+       ░██ ░██   ░███ ░██         ░██  ░██  ░██   ░██   ░██ ░██    ░██ ░██    ░██             
+ ░███████   ░█████░██  ░███████  ░██    ░██ ░██   ░██   ░██  ░███████  ░██    ░██ ░██████████ 
+                                                                                              
+                                                                                              
+                                                                                              `
+
+var appVersion = "v0.1.0"
+var gitCommit = "unknown"
 
 // Curated assets and pairs (static table)
 
@@ -129,13 +145,22 @@ type (
 	orderbookTickMsg struct{}
 	tradesTickMsg    struct{}
 	lpTickMsg        struct{}
+	networkTickMsg   struct{}
 	orderbookDataMsg struct{ ob hProtocol.OrderBookSummary }
 	tradesDataMsg    struct{ list []hProtocol.Trade }
 	lpDataMsg        struct{ data Liquidity }
 	lpNoteMsg        string
 	exposureDataMsg  struct{ pools []Liquidity }
+	networkStatsMsg  struct{ capacityUsage float64 }
 	errMsg           error
 )
+
+// FeeStats represents the response from /fee_stats endpoint
+type FeeStats struct {
+	LastLedger          string `json:"last_ledger"`
+	LastLedgerBaseFee   string `json:"last_ledger_base_fee"`
+	LedgerCapacityUsage string `json:"ledger_capacity_usage"`
+}
 
 // Model
 
@@ -179,6 +204,10 @@ type model struct {
 	lastTradesAt    time.Time
 	lastLPAt        time.Time
 
+	// network stats
+	networkCapacity float64 // 0.0 to 1.0 (0-100%)
+	lastNetworkAt   time.Time
+
 	// debug modes
 	debugMode bool
 
@@ -205,10 +234,10 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		setupDebugLogger()
 	}
 
-	// Always start at Service Selection
+	// Always start at Landing screen
 	// Environment variables BASE_ASSET/QUOTE_ASSET are stored as defaults
 	// but don't skip the landing page
-	initialScreen := screenServiceSelection
+	initialScreen := screenLanding
 
 	return model{
 		client:        client,
@@ -227,9 +256,11 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 }
 
 func (m model) Init() tea.Cmd {
-	// Don't start polling at initialization
-	// Polling starts when user selects a pair and navigates to Pair Info screen
-	return nil
+	// Start network capacity polling immediately
+	return tea.Batch(
+		fetchNetworkStatsCmd(m.client),
+		tea.Tick(networkInterval, func(time.Time) tea.Msg { return networkTickMsg{} }),
+	)
 }
 
 // Update
@@ -244,6 +275,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Screen-specific navigation
 		switch m.currentScreen {
+		case screenLanding:
+			switch msg.String() {
+			case "enter":
+				m.currentScreen = screenServiceSelection
+				return m, nil
+			}
+
 		case screenServiceSelection:
 			switch msg.String() {
 			case "1":
@@ -439,6 +477,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			resolveAndFetchLPCmd(m.client, m.base, m.quote),
 			tea.Tick(lpInterval, func(time.Time) tea.Msg { return lpTickMsg{} }),
 		)
+	case networkTickMsg:
+		return m, tea.Batch(
+			fetchNetworkStatsCmd(m.client),
+			tea.Tick(networkInterval, func(time.Time) tea.Msg { return networkTickMsg{} }),
+		)
 
 	case orderbookDataMsg:
 		m.orderbook = msg.ob
@@ -470,6 +513,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.exposurePools = msg.pools
 		m.err = nil
 		return m, nil
+	case networkStatsMsg:
+		m.networkCapacity = msg.capacityUsage
+		m.lastNetworkAt = time.Now()
+		return m, nil
 	case errMsg:
 		m.err = msg
 		return m, nil
@@ -482,6 +529,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	switch m.currentScreen {
+	case screenLanding:
+		return landingView(m)
 	case screenServiceSelection:
 		return serviceSelectionView(m)
 	case screenSelectPair:
@@ -499,7 +548,7 @@ func (m model) View() string {
 	case screenExposureDebug:
 		return exposureDebugView(m)
 	default:
-		return serviceSelectionView(m)
+		return landingView(m)
 	}
 }
 
@@ -533,6 +582,8 @@ func pairInfoView(m model) string {
 
 	// Build content
 	content := lipgloss.JoinVertical(lipgloss.Left,
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle(subtitle),
 		row1,
@@ -722,35 +773,25 @@ func (m model) renderLiquidity() string {
 		return strings.Join(lines, "\n")
 	}
 	if len(m.lp.Codes) == 2 && m.lp.Codes[0] != "" && m.lp.Codes[1] != "" {
-		// First section: LOCKED, FEES (1D), FEES (7D)
-		// Column widths: code=10, locked=20, fees1d=18, fees7d=18
-		header1 := padRightVis("", 22) + dimStyle.Render("LOCKED") +
-			padRightVis("", 9) + dimStyle.Render("FEES (1D)") +
-			padRightVis("", 9) + dimStyle.Render("FEES (7D)")
-		lines = append(lines, header1)
+		// Single header line with all columns
+		// Column widths: code=8, locked=16, fees1d=14, fees7d=14, vol1d=16, vol7d=16
+		header := padRightVis("", 8) +
+			padLeftVis(dimStyle.Render("LOCKED"), 16) + padRightVis("", 2) +
+			padLeftVis(dimStyle.Render("FEES (1D)"), 14) + padRightVis("", 2) +
+			padLeftVis(dimStyle.Render("FEES (7D)"), 14) + padRightVis("", 2) +
+			padLeftVis(dimStyle.Render("VOLUME (1D)"), 16) + padRightVis("", 2) +
+			padLeftVis(dimStyle.Render("VOLUME (7D)"), 16)
+		lines = append(lines, header)
 
 		for i := 0; i < 2; i++ {
-			code := padRightVis(m.lp.Codes[i], 10)
-			locked := padLeftVis(m.lp.Locked[i], 20)
-			fees1d := padLeftVis(m.lp.Fees1d[i], 18)
-			fees7d := padLeftVis(m.lp.Fees7d[i], 18)
-			row := code + locked + padRightVis("", 2) + fees1d + padRightVis("", 2) + fees7d
-			lines = append(lines, row)
-		}
-
-		lines = append(lines, "")
-
-		// Second section: VOLUME (1D), VOLUME (7D)
-		// Column widths: code=10, vol1d=28, vol7d=28
-		header2 := padRightVis("", 26) + dimStyle.Render("VOLUME (1D)") +
-			padRightVis("", 16) + dimStyle.Render("VOLUME (7D)")
-		lines = append(lines, header2)
-
-		for i := 0; i < 2; i++ {
-			code := padRightVis(m.lp.Codes[i], 10)
-			vol1d := padLeftVis(m.lp.Vol1d[i], 28)
-			vol7d := padLeftVis(m.lp.Vol7d[i], 28)
-			row := code + vol1d + padRightVis("", 2) + vol7d
+			code := padRightVis(m.lp.Codes[i], 8)
+			locked := padLeftVis(trimLPTo2Decimals(m.lp.Locked[i]), 16)
+			fees1d := padLeftVis(trimLPTo2Decimals(m.lp.Fees1d[i]), 14)
+			fees7d := padLeftVis(trimLPTo2Decimals(m.lp.Fees7d[i]), 14)
+			vol1d := padLeftVis(trimLPTo2Decimals(m.lp.Vol1d[i]), 16)
+			vol7d := padLeftVis(trimLPTo2Decimals(m.lp.Vol7d[i]), 16)
+			row := code + locked + padRightVis("", 2) + fees1d + padRightVis("", 2) + fees7d +
+				padRightVis("", 2) + vol1d + padRightVis("", 2) + vol7d
 			lines = append(lines, row)
 		}
 	} else {
@@ -842,6 +883,52 @@ func fetchTradesCmd(client *horizonclient.Client, base, quote txnbuild.Asset, cu
 			}
 		}
 		return tradesDataMsg{list: recs}
+	}
+}
+
+func fetchNetworkStatsCmd(client *horizonclient.Client) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return networkStatsMsg{capacityUsage: -1}
+		}
+
+		// Fetch fee_stats from Horizon
+		url := client.HorizonURL + "/fee_stats"
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			log.Printf("Failed to create network stats request: %v", err)
+			return networkStatsMsg{capacityUsage: -1}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("Failed to fetch network stats: %v", err)
+			return networkStatsMsg{capacityUsage: -1}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			log.Printf("Network stats HTTP %d", resp.StatusCode)
+			return networkStatsMsg{capacityUsage: -1}
+		}
+
+		var stats FeeStats
+		if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+			log.Printf("Failed to decode network stats: %v", err)
+			return networkStatsMsg{capacityUsage: -1}
+		}
+
+		// Parse ledger_capacity_usage as float
+		capacity, err := strconv.ParseFloat(stats.LedgerCapacityUsage, 64)
+		if err != nil {
+			log.Printf("Failed to parse capacity usage: %v", err)
+			return networkStatsMsg{capacityUsage: -1}
+		}
+
+		return networkStatsMsg{capacityUsage: capacity}
 	}
 }
 
@@ -1174,18 +1261,24 @@ func spreadPercent(bestBid, bestAsk string) string {
 
 // Reusable UI components
 
+func renderVersionInfo() string {
+	return dimStyle.Render(fmt.Sprintf("%s (build %s)", appVersion, gitCommit))
+}
+
 func renderHeader() string {
-	return asciiAquila
+	return asciiSdexmon
 }
 
 func renderSubtitle(title string) string {
 	return boldStyle.Render(title)
 }
 
-func renderFooter(shortcuts string, isLive bool) string {
-	statusText := "LIVE"
-	if !isLive {
-		statusText = "OFFLINE"
+func renderFooter(shortcuts string, networkCapacity float64) string {
+	// Format network capacity as percentage
+	statusText := "Network Usage: -- "
+	if networkCapacity >= 0 {
+		pct := networkCapacity * 100
+		statusText = fmt.Sprintf("Network Usage: %.0f%% ", pct)
 	}
 
 	w := 140 // fixed width
@@ -1203,6 +1296,8 @@ func renderFooter(shortcuts string, isLive bool) string {
 func (m model) bottomLine() string {
 	var shortcuts string
 	switch m.currentScreen {
+	case screenLanding:
+		shortcuts = "enter: ⏎  q: quit"
 	case screenServiceSelection:
 		shortcuts = "1: pairs  2: assets  q: quit"
 	case screenSelectPair:
@@ -1222,17 +1317,7 @@ func (m model) bottomLine() string {
 	default:
 		shortcuts = "q: quit"
 	}
-	return renderFooter(shortcuts, m.isLive())
-}
-
-func bottomBarFixed(shortcuts string, isLive bool) string {
-	return renderFooter(shortcuts, isLive)
-}
-
-func (m model) isLive() bool {
-	ok1 := time.Since(m.lastOrderbookAt) < 3*orderbookInterval
-	ok2 := time.Since(m.lastTradesAt) < 3*tradesInterval
-	return ok1 && ok2
+	return renderFooter(shortcuts, m.networkCapacity)
 }
 
 func humanElapsedShort(d time.Duration) string {
@@ -1273,8 +1358,45 @@ var (
 	inverseStyle  = lipgloss.NewStyle().Reverse(true)
 )
 
+func landingView(m model) string {
+	versionInfo := fmt.Sprintf("%s (build %s)", appVersion, gitCommit)
+	lines := []string{
+		dimStyle.Render(versionInfo),
+		"",
+		asciiSdexmon,
+		"",
+	}
+
+	content := strings.Join(lines, "\n")
+	contentHeight := lipgloss.Height(content)
+	targetHeight := 60
+	if m.height > 0 {
+		targetHeight = m.height
+	}
+	// Account for credit line (1 line + 2 spacing for bottom)
+	paddingLines := targetHeight - contentHeight - 3
+	if paddingLines < 0 {
+		paddingLines = 0
+	}
+	padding := strings.Repeat("\n", paddingLines)
+
+	// Create credit line right-aligned
+	creditText := "Made with ❤️  by the Zeam Team"
+	w := 140 // fixed width
+	gap := w - lipgloss.Width(creditText)
+	if gap < 0 {
+		gap = 0
+	}
+	creditLine := strings.Repeat(" ", gap) + dimStyle.Render(creditText)
+
+	bottom := m.bottomLine()
+	return lipgloss.JoinVertical(lipgloss.Left, content, padding, creditLine, bottom)
+}
+
 func serviceSelectionView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("Service Selection"),
 		"",
@@ -1311,6 +1433,8 @@ func serviceSelectionView(m model) string {
 
 func pairInputView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("Type Asset Pair"),
 		"",
@@ -1346,6 +1470,8 @@ func pairInputView(m model) string {
 
 func pairSelectorView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("Select Pair"),
 		"",
@@ -1381,6 +1507,8 @@ func pairSelectorView(m model) string {
 
 func selectAssetView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("Select Asset"),
 		"",
@@ -1421,6 +1549,8 @@ func selectAssetView(m model) string {
 
 func viewExposureView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("View Exposure - " + assetShort(m.selectedAsset)),
 		"",
@@ -1540,6 +1670,8 @@ func viewExposureView(m model) string {
 
 func exposureDebugView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("Exposure Debug"),
 		"",
@@ -1584,6 +1716,8 @@ func exposureDebugView(m model) string {
 
 func pairDebugView(m model) string {
 	lines := []string{
+		renderVersionInfo(),
+		"",
 		renderHeader(),
 		renderSubtitle("Pair Debug"),
 		"",
@@ -1803,6 +1937,23 @@ func parseFlexNumberWithDecimals(raw json.RawMessage, decimals int) string {
 	}
 	// Fallback
 	return "0.00"
+}
+
+func trimLPTo2Decimals(s string) string {
+	// Trim a formatted LP amount to 2 decimals
+	// Input format: "8 927 467.4437965" or similar
+	idx := strings.Index(s, ".")
+	if idx < 0 {
+		return s + ".00"
+	}
+	intp := s[:idx]
+	frac := s[idx+1:]
+	if len(frac) > 2 {
+		frac = frac[:2]
+	} else if len(frac) < 2 {
+		frac = frac + strings.Repeat("0", 2-len(frac))
+	}
+	return intp + "." + frac
 }
 
 func formatLPAmount(s string) string {
@@ -2055,6 +2206,12 @@ func fetchExposureCmd(client *horizonclient.Client, asset txnbuild.Asset) tea.Cm
 }
 
 func main() {
+	// Set git commit from build-time variable if available
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Printf("%s (build %s)\n", appVersion, gitCommit)
+		os.Exit(0)
+	}
+
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	client := newClient()
 

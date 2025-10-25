@@ -26,9 +26,16 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
+# Set terminal window title
+printf '\033]0;sdexmon_\007'
+
 # Set fixed terminal size (140 columns x 60 rows)
 if command -v tput >/dev/null 2>&1; then
   printf '\e[8;60;140t'
 fi
 
-exec go run .
+# Get git commit hash (short form)
+GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Build with git commit injected
+exec go run -ldflags="-X main.gitCommit=${GIT_COMMIT}" ./cmd/sdexmon
