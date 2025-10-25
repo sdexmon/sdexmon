@@ -37,7 +37,6 @@ type screenState int
 const (
 	screenLanding screenState = iota
 	screenServiceSelection
-	screenSelectPair
 	screenPairInfo
 	screenPairDebug
 	screenSelectAsset
@@ -338,53 +337,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		case screenSelectPair:
-			switch msg.String() {
-			case "esc":
-				m.currentScreen = screenServiceSelection
-				return m, nil
-			case "a":
-				m.currentScreen = screenPairInput
-				m.baseInput.SetValue(assetString(m.base))
-				m.quoteInput.SetValue(assetString(m.quote))
-				m.baseInput.Focus()
-				return m, nil
-			case "up", "k":
-				if m.pairIndex > 0 {
-					m.pairIndex--
-				}
-				return m, nil
-			case "down", "j":
-				if m.pairIndex < len(curatedPairs)-1 {
-					m.pairIndex++
-				}
-				return m, nil
-			case "enter":
-				if len(curatedPairs) > 0 {
-					opt := curatedPairs[m.pairIndex]
-					base, ok1 := curatedAssets[opt.Base]
-					quote, ok2 := curatedAssets[opt.Quote]
-					if ok1 && ok2 {
-						m.base, m.quote = base, quote
-						m.tradeCursor = ""
-						m.currentScreen = screenPairInfo
-						m.status = "pair selected"
-						return m, tea.Batch(
-							fetchOrderbookCmd(m.client, m.base, m.quote),
-							fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
-							resolveAndFetchLPCmd(m.client, m.base, m.quote),
-							tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
-							tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
-						)
-					}
-				}
-				return m, nil
-			}
-
 		case screenPairInput:
 			switch msg.String() {
 			case "esc":
-				m.currentScreen = screenSelectPair
+				m.currentScreen = screenServiceSelection
 				return m, nil
 			case "enter":
 				base, err1 := parseAsset(strings.TrimSpace(m.baseInput.Value()))
@@ -473,7 +429,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
 			case "b":
-				m.currentScreen = screenSelectPair
+				m.currentScreen = screenServiceSelection
 				return m, nil
 			case "z":
 				m.currentScreen = screenPairDebug
@@ -496,7 +452,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentScreen = screenPairInfo
 				return m, nil
 			case "b":
-				m.currentScreen = screenSelectPair
+				m.currentScreen = screenServiceSelection
 				return m, nil
 			}
 
@@ -623,8 +579,6 @@ func (m model) View() string {
 		return landingView(m)
 	case screenServiceSelection:
 		return serviceSelectionView(m)
-	case screenSelectPair:
-		return pairSelectorView(m)
 	case screenPairInput:
 		return pairInputView(m)
 	case screenPairInfo:
@@ -1461,8 +1415,6 @@ func (m model) bottomLine() string {
 		} else {
 			shortcuts = "1: pairs  2: assets  q: quit"
 		}
-	case screenSelectPair:
-		shortcuts = "↑/↓: navigate  enter: select  a: custom pair  esc: back  q: quit"
 	case screenPairInfo:
 		if m.showPairPopup {
 			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
@@ -1470,7 +1422,7 @@ func (m model) bottomLine() string {
 			shortcuts = "p: pairs  b: back  ,/. depth  z: debug  q: quit"
 		}
 	case screenPairDebug:
-		shortcuts = "z: pair info  b: select pair  q: quit"
+		shortcuts = "z: pair info  b: back  q: quit"
 	case screenSelectAsset:
 		shortcuts = "↑/↓: navigate  enter: select  esc: back  q: quit"
 	case screenViewExposure:
@@ -1629,43 +1581,6 @@ func pairInputView(m model) string {
 	lines = append(lines, m.baseInput.View())
 	lines = append(lines, m.quoteInput.View())
 	lines = append(lines, "")
-	if m.err != nil {
-		lines = append(lines, "")
-		lines = append(lines, errorStyle.Render(m.err.Error()))
-	}
-
-	content := strings.Join(lines, "\n")
-	contentHeight := lipgloss.Height(content)
-	targetHeight := 60
-	if m.height > 0 {
-		targetHeight = m.height
-	}
-	paddingLines := targetHeight - contentHeight - 2
-	if paddingLines < 0 {
-		paddingLines = 0
-	}
-	padding := strings.Repeat("\n", paddingLines)
-
-	bottom := m.bottomLine()
-	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
-}
-
-func pairSelectorView(m model) string {
-	lines := []string{
-		renderVersionInfo(),
-		"",
-		renderHeader(),
-		renderSubtitle("Select Pair"),
-		"",
-	}
-	for i, p := range curatedPairs {
-		label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
-		if i == m.pairIndex {
-			lines = append(lines, selectedStyle.Render("> "+label))
-		} else {
-			lines = append(lines, pairItemStyle.Render("  "+label))
-		}
-	}
 	if m.err != nil {
 		lines = append(lines, "")
 		lines = append(lines, errorStyle.Render(m.err.Error()))
