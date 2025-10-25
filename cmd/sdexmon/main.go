@@ -141,17 +141,19 @@ var liquidityPoolIDs = map[string]string{
 // Messages
 
 type (
-	orderbookTickMsg struct{}
-	tradesTickMsg    struct{}
-	lpTickMsg        struct{}
-	networkTickMsg   struct{}
-	orderbookDataMsg struct{ ob hProtocol.OrderBookSummary }
-	tradesDataMsg    struct{ list []hProtocol.Trade }
-	lpDataMsg        struct{ data Liquidity }
-	lpNoteMsg        string
-	exposureDataMsg  struct{ pools []Liquidity }
-	networkStatsMsg  struct{ capacityUsage float64 }
-	errMsg           error
+	orderbookTickMsg     struct{}
+	tradesTickMsg        struct{}
+	lpTickMsg            struct{}
+	networkTickMsg       struct{}
+	orderbookDataMsg     struct{ ob hProtocol.OrderBookSummary }
+	tradesDataMsg        struct{ list []hProtocol.Trade }
+	lpDataMsg            struct{ data Liquidity }
+	lpNoteMsg            string
+	exposureDataMsg      struct{ pools []Liquidity }
+	baseExposureDataMsg  struct{ pools []Liquidity }
+	quoteExposureDataMsg struct{ pools []Liquidity }
+	networkStatsMsg      struct{ capacityUsage float64 }
+	errMsg               error
 )
 
 // FeeStats represents the response from /fee_stats endpoint
@@ -184,6 +186,8 @@ type model struct {
 	lpPoolID      string
 	lpMessage     string
 	exposurePools []Liquidity // for view exposure screen
+	baseExposure  []Liquidity // exposure pools for base asset in pair
+	quoteExposure []Liquidity // exposure pools for quote asset in pair
 
 	// debug log buffer
 	debugLogs []string
@@ -314,6 +318,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								fetchOrderbookCmd(m.client, m.base, m.quote),
 								fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
 								resolveAndFetchLPCmd(m.client, m.base, m.quote),
+								fetchBaseExposureCmd(m.client, m.base),
+								fetchQuoteExposureCmd(m.client, m.quote),
 								tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
 								tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
 							)
@@ -361,6 +367,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					fetchOrderbookCmd(m.client, m.base, m.quote),
 					fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
 					resolveAndFetchLPCmd(m.client, m.base, m.quote),
+					fetchBaseExposureCmd(m.client, m.base),
+					fetchQuoteExposureCmd(m.client, m.quote),
 					tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
 					tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
 				)
@@ -411,6 +419,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								fetchOrderbookCmd(m.client, m.base, m.quote),
 								fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
 								resolveAndFetchLPCmd(m.client, m.base, m.quote),
+								fetchBaseExposureCmd(m.client, m.base),
+								fetchQuoteExposureCmd(m.client, m.quote),
 								tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
 								tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
 							)
@@ -559,6 +569,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.exposurePools = msg.pools
 		m.err = nil
 		return m, nil
+	case baseExposureDataMsg:
+		m.baseExposure = msg.pools
+		return m, nil
+	case quoteExposureDataMsg:
+		m.quoteExposure = msg.pools
+		return m, nil
 	case networkStatsMsg:
 		m.networkCapacity = msg.capacityUsage
 		m.lastNetworkAt = time.Now()
@@ -646,10 +662,13 @@ func pairInfoView(m model) string {
 	ob := m.renderOrderbook()
 	tr := m.renderTrades()
 	lp := m.renderLiquidity()
+	baseExp := m.renderExposure(m.base, m.baseExposure)
+	quoteExp := m.renderExposure(m.quote, m.quoteExposure)
 
-	// layout: two rows
-	// Top row: ORDER BOOK (left) and TRADES (right)
-	// Bottom row: LIQUIDITY POOL (full width)
+	// layout: four rows
+	// Row 1: ORDER BOOK (left) and TRADES (right)
+	// Row 2: LIQUIDITY POOL (full width)
+	// Row 3: EXPOSURE BASE (left) and EXPOSURE QUOTE (right)
 	leftW := 66
 	rightW := 44
 
@@ -660,6 +679,11 @@ func pairInfoView(m model) string {
 	// Full width panel
 	lpW := leftW + rightW + 1 // Combined width + spacer
 	row2 := panelStyle.Width(lpW).Render(lp)
+
+	// Exposure panels - split width like row 1
+	expBasePanel := panelStyle.Width(leftW).Render(baseExp)
+	expQuotePanel := panelStyle.Width(rightW).Render(quoteExp)
+	row3 := lipgloss.JoinHorizontal(lipgloss.Left, expBasePanel, " ", expQuotePanel)
 
 	bottom := m.bottomLine()
 
@@ -672,6 +696,8 @@ func pairInfoView(m model) string {
 		row1,
 		"", // 1 row spacer
 		row2,
+		"", // 1 row spacer
+		row3,
 	)
 	contentHeight := lipgloss.Height(content)
 	targetHeight := 60
@@ -908,6 +934,105 @@ func (m model) renderLiquidity() string {
 	} else {
 		lines = append(lines, dimStyle.Render("Loading pool metrics..."))
 	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
+	assetCode := assetShort(asset)
+	title := boldStyle.Render(fmt.Sprintf("EXPOSURE: %s", assetCode))
+	lines := []string{title}
+
+	if len(pools) == 0 {
+		lines = append(lines, dimStyle.Render("No pools"))
+		return strings.Join(lines, "\n")
+	}
+
+	// Build exposure entries with locked amounts for selected asset
+	type exposureEntry struct {
+		otherAsset string
+		amount     string
+		numericAmt float64
+	}
+
+	entries := []exposureEntry{}
+	for _, pool := range pools {
+		// Find which index has the selected asset
+		var selectedIdx, otherIdx int
+		if strings.EqualFold(pool.Codes[0], assetCode) {
+			selectedIdx = 0
+			otherIdx = 1
+		} else if strings.EqualFold(pool.Codes[1], assetCode) {
+			selectedIdx = 1
+			otherIdx = 0
+		} else {
+			continue
+		}
+
+		// Parse the locked amount to float for sorting
+		amtStr := pool.Locked[selectedIdx]
+		amtClean := strings.ReplaceAll(strings.ReplaceAll(amtStr, " ", ""), ",", "")
+		numeric, err := strconv.ParseFloat(amtClean, 64)
+		if err != nil {
+			numeric = 0
+		}
+
+		entries = append(entries, exposureEntry{
+			otherAsset: pool.Codes[otherIdx],
+			amount:     amtStr,
+			numericAmt: numeric,
+		})
+	}
+
+	// Sort by numeric amount descending
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].numericAmt > entries[i].numericAmt {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	// Find max amount for bar scaling
+	maxAmt := 0.0
+	for _, e := range entries {
+		if e.numericAmt > maxAmt {
+			maxAmt = e.numericAmt
+		}
+	}
+
+	// Render compact view - limit to top 5
+	barWidth := 12
+	maxDisplay := 5
+	for i, e := range entries {
+		if i >= maxDisplay {
+			break
+		}
+		// Format pair as "CODE/ASSET" (4 chars for code)
+		pairStr := fmt.Sprintf("%4s/%s", e.otherAsset, assetCode)
+
+		// Format amount with 2 decimals
+		amtFormatted := formatFloatWithCommas(e.numericAmt)
+		if idx := strings.Index(amtFormatted, "."); idx >= 0 {
+			intPart := amtFormatted[:idx]
+			decPart := amtFormatted[idx+1:]
+			if len(decPart) > 2 {
+				decPart = decPart[:2]
+			}
+			amtFormatted = intPart + "." + decPart
+		}
+		amtFormatted = padLeftVis(amtFormatted, 14)
+
+		// Calculate bar ratio
+		ratio := 0.0
+		if maxAmt > 0 {
+			ratio = e.numericAmt / maxAmt
+		}
+		bar := depthBar(barWidth, ratio, lipgloss.Color("24"))
+
+		line := lipgloss.JoinHorizontal(lipgloss.Top, pairStr, "  ", amtFormatted, " ", bar)
+		lines = append(lines, line)
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -2250,6 +2375,68 @@ func getDebugLogs() []string {
 	result := make([]string, len(debugLogBuffer))
 	copy(result, debugLogBuffer)
 	return result
+}
+
+// fetchBaseExposureCmd fetches all liquidity pools containing the base asset
+func fetchBaseExposureCmd(client *horizonclient.Client, asset txnbuild.Asset) tea.Cmd {
+	return func() tea.Msg {
+		if asset == nil {
+			return baseExposureDataMsg{pools: []Liquidity{}}
+		}
+		pools := fetchExposurePools(asset)
+		return baseExposureDataMsg{pools: pools}
+	}
+}
+
+// fetchQuoteExposureCmd fetches all liquidity pools containing the quote asset
+func fetchQuoteExposureCmd(client *horizonclient.Client, asset txnbuild.Asset) tea.Cmd {
+	return func() tea.Msg {
+		if asset == nil {
+			return quoteExposureDataMsg{pools: []Liquidity{}}
+		}
+		pools := fetchExposurePools(asset)
+		return quoteExposureDataMsg{pools: pools}
+	}
+}
+
+// fetchExposurePools is the shared logic for fetching exposure pools
+func fetchExposurePools(asset txnbuild.Asset) []Liquidity {
+	assetCode := assetShort(asset)
+	var poolIDs []string
+
+	// Search through our liquidityPoolIDs map for pairs containing this asset
+	for pairKey, poolID := range liquidityPoolIDs {
+		if strings.Contains(pairKey, assetCode) {
+			// Check if we already have this pool ID
+			found := false
+			for _, existingID := range poolIDs {
+				if existingID == poolID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				poolIDs = append(poolIDs, poolID)
+			}
+		}
+	}
+
+	if len(poolIDs) == 0 {
+		return []Liquidity{}
+	}
+
+	// Fetch all pools
+	var pools []Liquidity
+	for _, poolID := range poolIDs {
+		data, err := fetchLPByID(poolID)
+		if err != nil {
+			log.Printf("Failed to fetch pool %s: %v", poolID, err)
+			continue
+		}
+		pools = append(pools, data)
+	}
+
+	return pools
 }
 
 // fetchExposureCmd fetches all liquidity pools containing the specified asset
