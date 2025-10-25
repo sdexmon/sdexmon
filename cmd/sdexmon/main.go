@@ -284,9 +284,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case screenServiceSelection:
+			// Handle popup pair selector if open from service selection
+			if m.showPairPopup {
+				switch msg.String() {
+				case "esc":
+					m.showPairPopup = false
+					return m, nil
+				case "up", "k":
+					if m.pairIndex > 0 {
+						m.pairIndex--
+					}
+					return m, nil
+				case "down", "j":
+					if m.pairIndex < len(curatedPairs)-1 {
+						m.pairIndex++
+					}
+					return m, nil
+				case "enter":
+					if len(curatedPairs) > 0 {
+						opt := curatedPairs[m.pairIndex]
+						base, ok1 := curatedAssets[opt.Base]
+						quote, ok2 := curatedAssets[opt.Quote]
+						if ok1 && ok2 {
+							m.base, m.quote = base, quote
+							m.tradeCursor = ""
+							m.showPairPopup = false
+							m.currentScreen = screenPairInfo
+							m.status = "pair selected"
+							return m, tea.Batch(
+								fetchOrderbookCmd(m.client, m.base, m.quote),
+								fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
+								resolveAndFetchLPCmd(m.client, m.base, m.quote),
+								tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
+								tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
+							)
+						}
+					}
+					return m, nil
+				}
+				return m, nil
+			}
+
+			// Normal service selection when popup is closed
 			switch msg.String() {
 			case "1":
-				m.currentScreen = screenSelectPair
+				// Show popup instead of going to pair selector screen
+				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
 			case "2":
@@ -1413,7 +1456,11 @@ func (m model) bottomLine() string {
 	case screenLanding:
 		shortcuts = "enter: ⏎  q: quit"
 	case screenServiceSelection:
-		shortcuts = "1: pairs  2: assets  q: quit"
+		if m.showPairPopup {
+			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
+		} else {
+			shortcuts = "1: pairs  2: assets  q: quit"
+		}
 	case screenSelectPair:
 		shortcuts = "↑/↓: navigate  enter: select  a: custom pair  esc: back  q: quit"
 	case screenPairInfo:
@@ -1547,7 +1594,23 @@ func serviceSelectionView(m model) string {
 	padding := strings.Repeat("\n", paddingLines)
 
 	bottom := m.bottomLine()
-	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+	baseView := lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+
+	// Overlay popup if active
+	if m.showPairPopup {
+		popup := pairSelectorPopup(m)
+		// Calculate screen dimensions
+		screenWidth := 140
+		screenHeight := targetHeight
+		if m.width > 0 {
+			screenWidth = m.width
+		}
+
+		// Center popup using lipgloss Place
+		return lipgloss.Place(screenWidth, screenHeight, lipgloss.Center, lipgloss.Center, popup, lipgloss.WithWhitespaceChars(" "), lipgloss.WithWhitespaceForeground(lipgloss.Color("0")))
+	}
+
+	return baseView
 }
 
 func pairInputView(m model) string {
