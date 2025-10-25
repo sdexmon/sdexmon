@@ -194,10 +194,11 @@ type model struct {
 	depth  int
 
 	// input and selection state
-	pairIndex  int
-	assetIndex int
-	baseInput  textinput.Model
-	quoteInput textinput.Model
+	pairIndex     int
+	assetIndex    int
+	baseInput     textinput.Model
+	quoteInput    textinput.Model
+	showPairPopup bool // shows pair selector popup overlay
 
 	// liveness
 	lastOrderbookAt time.Time
@@ -381,7 +382,53 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd1, cmd2)
 
 		case screenPairInfo:
+			// Handle popup pair selector if open
+			if m.showPairPopup {
+				switch msg.String() {
+				case "esc":
+					m.showPairPopup = false
+					return m, nil
+				case "up", "k":
+					if m.pairIndex > 0 {
+						m.pairIndex--
+					}
+					return m, nil
+				case "down", "j":
+					if m.pairIndex < len(curatedPairs)-1 {
+						m.pairIndex++
+					}
+					return m, nil
+				case "enter":
+					if len(curatedPairs) > 0 {
+						opt := curatedPairs[m.pairIndex]
+						base, ok1 := curatedAssets[opt.Base]
+						quote, ok2 := curatedAssets[opt.Quote]
+						if ok1 && ok2 {
+							m.base, m.quote = base, quote
+							m.tradeCursor = ""
+							m.showPairPopup = false
+							m.status = "pair updated"
+							return m, tea.Batch(
+								fetchOrderbookCmd(m.client, m.base, m.quote),
+								fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
+								resolveAndFetchLPCmd(m.client, m.base, m.quote),
+								tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
+								tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
+							)
+						}
+					}
+					return m, nil
+				}
+				return m, nil
+			}
+
+			// Normal pair info controls when popup is closed
 			switch msg.String() {
+			case "p":
+				// Open pair selector popup
+				m.showPairPopup = true
+				m.pairIndex = currentPairIndex(m.base, m.quote)
+				return m, nil
 			case "b":
 				m.currentScreen = screenSelectPair
 				return m, nil
@@ -552,6 +599,45 @@ func (m model) View() string {
 	}
 }
 
+func pairSelectorPopup(m model) string {
+	// Create a compact scrollable pair selector popup
+	lines := []string{
+		boldStyle.Render("SELECT PAIR"),
+		"",
+	}
+
+	// Show a window of pairs around the selected index
+	windowSize := 10
+	start := m.pairIndex - windowSize/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + windowSize
+	if end > len(curatedPairs) {
+		end = len(curatedPairs)
+		start = end - windowSize
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	for i := start; i < end; i++ {
+		p := curatedPairs[i]
+		label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
+		if i == m.pairIndex {
+			lines = append(lines, selectedStyle.Render("> "+label))
+		} else {
+			lines = append(lines, pairItemStyle.Render("  "+label))
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("↑/↓: navigate  enter: select  esc: close"))
+
+	content := strings.Join(lines, "\n")
+	return popupStyle.Render(content)
+}
+
 func pairInfoView(m model) string {
 	if m.base == nil || m.quote == nil {
 		// Fallback if somehow we're here without a pair
@@ -602,11 +688,39 @@ func pairInfoView(m model) string {
 	}
 	padding := strings.Repeat("\n", paddingLines)
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	baseView := lipgloss.JoinVertical(lipgloss.Left,
 		content,
 		padding,
 		bottom,
 	)
+
+	// Overlay popup if active
+	if m.showPairPopup {
+		popup := pairSelectorPopup(m)
+		// Calculate position to center popup
+		screenWidth := 140
+		screenHeight := targetHeight
+		if m.width > 0 {
+			screenWidth = m.width
+		}
+		popupWidth := lipgloss.Width(popup)
+		popupHeight := lipgloss.Height(popup)
+
+		// Center horizontally and vertically
+		left := (screenWidth - popupWidth) / 2
+		top := (screenHeight - popupHeight) / 2
+		if top < 0 {
+			top = 0
+		}
+		if left < 0 {
+			left = 0
+		}
+
+		// Position popup using lipgloss Place
+		return lipgloss.Place(screenWidth, screenHeight, lipgloss.Center, lipgloss.Center, popup, lipgloss.WithWhitespaceChars(" "), lipgloss.WithWhitespaceForeground(lipgloss.Color("0")))
+	}
+
+	return baseView
 }
 
 func (m model) renderOrderbook() string {
@@ -1303,7 +1417,11 @@ func (m model) bottomLine() string {
 	case screenSelectPair:
 		shortcuts = "↑/↓: navigate  enter: select  a: custom pair  esc: back  q: quit"
 	case screenPairInfo:
-		shortcuts = "b: back  ,/. depth  z: debug  q: quit"
+		if m.showPairPopup {
+			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
+		} else {
+			shortcuts = "p: pairs  b: back  ,/. depth  z: debug  q: quit"
+		}
 	case screenPairDebug:
 		shortcuts = "z: pair info  b: select pair  q: quit"
 	case screenSelectAsset:
@@ -1356,6 +1474,7 @@ var (
 	pairItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	panelStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
 	inverseStyle  = lipgloss.NewStyle().Reverse(true)
+	popupStyle    = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("51")).Padding(1, 2).Background(lipgloss.Color("235"))
 )
 
 func landingView(m model) string {
