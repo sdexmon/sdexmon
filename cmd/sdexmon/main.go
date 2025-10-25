@@ -16,6 +16,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stellar/go/clients/horizonclient"
 	hProtocol "github.com/stellar/go/protocols/horizon"
@@ -422,14 +423,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
-			case "z":
+			case "d":
 				m.currentScreen = screenPairDebug
 				return m, nil
 			}
 
 	case screenPairDebug:
 		switch msg.String() {
-		case "z":
+		case "d":
 			m.currentScreen = screenPairInfo
 			return m, nil
 		}
@@ -1457,10 +1458,10 @@ func (m model) bottomLine() string {
 		if m.showPairPopup {
 			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
 		} else {
-			shortcuts = "p: pairs  z: debug  q: quit"
+			shortcuts = "p: pairs  d: detail  q: quit"
 		}
 	case screenPairDebug:
-		shortcuts = "z: pair info  q: quit"
+		shortcuts = "d: back  q: quit"
 	case screenPairInput:
 		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
 	default:
@@ -1595,18 +1596,8 @@ func pairInputView(m model) string {
 
 
 func pairDebugView(m model) string {
-	lines := []string{
-		renderVersionInfo(),
-		"",
-		renderHeader(),
-		renderSubtitle("Pair Debug"),
-		"",
-	}
-	// Pair
+	// Build markdown table
 	pair := fmt.Sprintf("%s/%s", assetShort(m.base), assetShort(m.quote))
-	lines = append(lines, dimStyle.Render("Pair selected:"), pair)
-	lines = append(lines, "")
-	// Assets full
 	baseStr := assetString(m.base)
 	if baseStr == "native" {
 		baseStr = "XLM:native"
@@ -1615,25 +1606,82 @@ func pairDebugView(m model) string {
 	if quoteStr == "native" {
 		quoteStr = "XLM:native"
 	}
-	lines = append(lines, dimStyle.Render("Base asset (code:issuer):"), baseStr)
-	lines = append(lines, dimStyle.Render("Counter asset (code:issuer):"), quoteStr)
-	lines = append(lines, "")
-	// LP ID
 	pairKey := fmt.Sprintf("%s-%s", assetShort(m.base), assetShort(m.quote))
 	lpID, found := liquidityPoolIDs[pairKey]
 	if !found {
 		lpID = "(not found)"
 	}
-	lines = append(lines, dimStyle.Render("LP Pool ID:"), lpID)
-	lines = append(lines, "")
-	// Debug logs
-	lines = append(lines, boldStyle.Render("Logs (latest)"))
-	logStart := len(m.debugLogs) - 30
-	if logStart < 0 {
-		logStart = 0
+
+	// Create markdown table
+	markdown := fmt.Sprintf(`## Pair Details
+
+| Property | Value |
+|----------|-------|
+| Pair Selected | %s |
+| Base Asset | %s |
+| Counter Asset | %s |
+| LP Pool ID | %s |
+`, pair, baseStr, quoteStr, lpID)
+
+	// Render with Glamour
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(120),
+	)
+	if err != nil {
+		// Fallback to plain rendering if Glamour fails
+		lines := []string{
+			renderVersionInfo(),
+			"",
+			renderHeader(),
+			renderSubtitle("Pair Detail"),
+			"",
+			boldStyle.Render("Pair Details"),
+			"",
+			fmt.Sprintf("Pair selected: %s", pair),
+			fmt.Sprintf("Base asset: %s", baseStr),
+			fmt.Sprintf("Counter asset: %s", quoteStr),
+			fmt.Sprintf("LP Pool ID: %s", lpID),
+		}
+		content := strings.Join(lines, "\n")
+		contentHeight := lipgloss.Height(content)
+		targetHeight := 60
+		if m.height > 0 {
+			targetHeight = m.height
+		}
+		paddingLines := targetHeight - contentHeight - 2
+		if paddingLines < 0 {
+			paddingLines = 0
+		}
+		padding := strings.Repeat("\n", paddingLines)
+		bottom := m.bottomLine()
+		return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
 	}
-	for i := logStart; i < len(m.debugLogs); i++ {
-		lines = append(lines, dimStyle.Render(m.debugLogs[i]))
+
+	renderedTable, err := r.Render(markdown)
+	if err != nil {
+		renderedTable = markdown // Fallback to raw markdown
+	}
+
+	lines := []string{
+		renderVersionInfo(),
+		"",
+		renderHeader(),
+		renderSubtitle("Pair Detail"),
+		"",
+		renderedTable,
+	}
+
+	// Add debug logs if available
+	if len(m.debugLogs) > 0 {
+		lines = append(lines, "", boldStyle.Render("Logs (latest)"))
+		logStart := len(m.debugLogs) - 20
+		if logStart < 0 {
+			logStart = 0
+		}
+		for i := logStart; i < len(m.debugLogs); i++ {
+			lines = append(lines, dimStyle.Render(m.debugLogs[i]))
+		}
 	}
 
 	content := strings.Join(lines, "\n")

@@ -134,12 +134,12 @@ These environment variables are read at runtime:
 
 ### Pair Info
 - `,/.`: Adjust depth (± clamped 1–7)
-- `z`: Toggle debug view
+- `d`: Toggle detail view
 - `b`: Back to pair selector
 - `q`: Quit
 
-### Pair Debug
-- `z`: Back to pair info
+### Pair Detail
+- `d`: Back to pair info
 - `b`: Back to pair selector
 - `q`: Quit
 
