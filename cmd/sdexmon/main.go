@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	defaultDepth      = 7 // rows per side (limit to 7 each side)
 	orderbookInterval = 1200 * time.Millisecond
 	tradesInterval    = 1200 * time.Millisecond
 	lpInterval        = 30 * time.Second
@@ -36,12 +35,8 @@ type screenState int
 
 const (
 	screenLanding screenState = iota
-	screenServiceSelection
 	screenPairInfo
 	screenPairDebug
-	screenSelectAsset
-	screenViewExposure
-	screenExposureDebug
 	screenPairInput // custom pair input screen
 )
 
@@ -194,7 +189,6 @@ type model struct {
 
 	width  int
 	height int
-	depth  int
 
 	// input and selection state
 	pairIndex     int
@@ -249,13 +243,14 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		base:          base,
 		quote:         quote,
 		trades:        make([]hProtocol.Trade, 0, 64),
-		depth:         defaultDepth,
 		baseInput:     b,
 		quoteInput:    q,
 		debugMode:     debugMode,
 		debugLogs:     make([]string, 0, 100),
 		exposurePools: make([]Liquidity, 0),
-		status:        "Select service to begin",
+		showPairPopup: false, // Start on landing page, open popup on enter
+		pairIndex:     currentPairIndex(base, quote),
+		status:        "Select pair to begin",
 	}
 }
 
@@ -280,14 +275,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Screen-specific navigation
 		switch m.currentScreen {
 		case screenLanding:
-			switch msg.String() {
-			case "enter":
-				m.currentScreen = screenServiceSelection
-				return m, nil
-			}
-
-		case screenServiceSelection:
-			// Handle popup pair selector if open from service selection
+			// Handle popup pair selector if open from landing
 			if m.showPairPopup {
 				switch msg.String() {
 				case "esc":
@@ -330,23 +318,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Normal service selection when popup is closed
+			// Landing with popup closed - open it on enter
 			switch msg.String() {
-			case "1":
-				// Show popup instead of going to pair selector screen
+			case "enter":
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
-				return m, nil
-			case "2":
-				m.currentScreen = screenSelectAsset
-				m.assetIndex = 0
 				return m, nil
 			}
 
 		case screenPairInput:
 			switch msg.String() {
 			case "esc":
-				m.currentScreen = screenServiceSelection
+				m.currentScreen = screenLanding
+				m.showPairPopup = true
 				return m, nil
 			case "enter":
 				base, err1 := parseAsset(strings.TrimSpace(m.baseInput.Value()))
@@ -438,79 +422,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
-			case "b":
-				m.currentScreen = screenServiceSelection
-				return m, nil
 			case "z":
 				m.currentScreen = screenPairDebug
 				return m, nil
-			case ",":
-				if m.depth > 1 {
-					m.depth -= 1
-				}
-				return m, nil
-			case ".":
-				if m.depth < 7 {
-					m.depth += 1
-				}
-				return m, nil
 			}
 
-		case screenPairDebug:
-			switch msg.String() {
-			case "z":
-				m.currentScreen = screenPairInfo
-				return m, nil
-			case "b":
-				m.currentScreen = screenServiceSelection
-				return m, nil
-			}
-
-		case screenSelectAsset:
-			assetList := []string{"XLM", "USDZ", "ZARZ", "EURZ", "XAUZ", "BTCZ", "USDC"}
-			switch msg.String() {
-			case "esc":
-				m.currentScreen = screenServiceSelection
-				return m, nil
-			case "up", "k":
-				if m.assetIndex > 0 {
-					m.assetIndex--
-				}
-				return m, nil
-			case "down", "j":
-				if m.assetIndex < len(assetList)-1 {
-					m.assetIndex++
-				}
-				return m, nil
-			case "enter":
-				if m.assetIndex < len(assetList) {
-					assetCode := assetList[m.assetIndex]
-					if asset, ok := curatedAssets[assetCode]; ok {
-						m.selectedAsset = asset
-						m.currentScreen = screenViewExposure
-						m.status = "loading exposure"
-						return m, fetchExposureCmd(m.client, asset)
-					}
-				}
-				return m, nil
-			}
-
-		case screenViewExposure:
-			switch msg.String() {
-			case "b":
-				m.currentScreen = screenSelectAsset
-				return m, nil
-			case "z":
-				m.currentScreen = screenExposureDebug
-				return m, nil
-			}
-
-		case screenExposureDebug:
-			switch msg.String() {
-			case "z":
-				m.currentScreen = screenViewExposure
-				return m, nil
-			}
+	case screenPairDebug:
+		switch msg.String() {
+		case "z":
+			m.currentScreen = screenPairInfo
+			return m, nil
+		}
 		}
 
 	case tea.WindowSizeMsg:
@@ -593,20 +515,12 @@ func (m model) View() string {
 	switch m.currentScreen {
 	case screenLanding:
 		return landingView(m)
-	case screenServiceSelection:
-		return serviceSelectionView(m)
 	case screenPairInput:
 		return pairInputView(m)
 	case screenPairInfo:
 		return pairInfoView(m)
 	case screenPairDebug:
 		return pairDebugView(m)
-	case screenSelectAsset:
-		return selectAssetView(m)
-	case screenViewExposure:
-		return viewExposureView(m)
-	case screenExposureDebug:
-		return exposureDebugView(m)
 	default:
 		return landingView(m)
 	}
@@ -654,7 +568,7 @@ func pairSelectorPopup(m model) string {
 func pairInfoView(m model) string {
 	if m.base == nil || m.quote == nil {
 		// Fallback if somehow we're here without a pair
-		return serviceSelectionView(m)
+		return landingView(m)
 	}
 
 	subtitle := fmt.Sprintf("Pair Info - %s/%s", assetShort(m.base), assetShort(m.quote))
@@ -680,9 +594,10 @@ func pairInfoView(m model) string {
 	lpW := leftW + rightW + 1 // Combined width + spacer
 	row2 := panelStyle.Width(lpW).Render(lp)
 
-	// Exposure panels - split width like row 1
-	expBasePanel := panelStyle.Width(leftW).Render(baseExp)
-	expQuotePanel := panelStyle.Width(rightW).Render(quoteExp)
+	// Exposure panels - equal width split
+	expW := (lpW - 1) / 2 // Equal width for both exposure panels
+	expBasePanel := panelStyle.Width(expW).Render(baseExp)
+	expQuotePanel := panelStyle.Width(expW).Render(quoteExp)
 	row3 := lipgloss.JoinHorizontal(lipgloss.Left, expBasePanel, " ", expQuotePanel)
 
 	bottom := m.bottomLine()
@@ -912,7 +827,9 @@ func (m model) renderLiquidity() string {
 	if len(m.lp.Codes) == 2 && m.lp.Codes[0] != "" && m.lp.Codes[1] != "" {
 		// Single header line with all columns
 		// Column widths: code=8, locked=16, fees1d=14, fees7d=14, vol1d=16, vol7d=16
-		header := padRightVis("", 8) +
+		// Add 10 spaces left padding to align with right-side containers
+		leftPad := strings.Repeat(" ", 10)
+		header := leftPad + padRightVis("", 8) +
 			padLeftVis(dimStyle.Render("LOCKED"), 16) + padRightVis("", 2) +
 			padLeftVis(dimStyle.Render("FEES (1D)"), 14) + padRightVis("", 2) +
 			padLeftVis(dimStyle.Render("FEES (7D)"), 14) + padRightVis("", 2) +
@@ -927,7 +844,7 @@ func (m model) renderLiquidity() string {
 			fees7d := padLeftVis(trimLPTo2Decimals(m.lp.Fees7d[i]), 14)
 			vol1d := padLeftVis(trimLPTo2Decimals(m.lp.Vol1d[i]), 16)
 			vol7d := padLeftVis(trimLPTo2Decimals(m.lp.Vol7d[i]), 16)
-			row := code + locked + padRightVis("", 2) + fees1d + padRightVis("", 2) + fees7d +
+			row := leftPad + code + locked + padRightVis("", 2) + fees1d + padRightVis("", 2) + fees7d +
 				padRightVis("", 2) + vol1d + padRightVis("", 2) + vol7d
 			lines = append(lines, row)
 		}
@@ -939,13 +856,8 @@ func (m model) renderLiquidity() string {
 
 func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 	assetCode := assetShort(asset)
-	title := boldStyle.Render(fmt.Sprintf("EXPOSURE: %s", assetCode))
+	title := boldStyle.Render(fmt.Sprintf("Top Liq Pools against %s", assetCode))
 	lines := []string{title}
-
-	if len(pools) == 0 {
-		lines = append(lines, dimStyle.Render("No pools"))
-		return strings.Join(lines, "\n")
-	}
 
 	// Build exposure entries with locked amounts for selected asset
 	type exposureEntry struct {
@@ -1000,37 +912,40 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 		}
 	}
 
-	// Render compact view - limit to top 5
+	// Always render exactly 5 rows
 	barWidth := 12
 	maxDisplay := 5
-	for i, e := range entries {
-		if i >= maxDisplay {
-			break
-		}
-		// Format pair as "CODE/ASSET" (4 chars for code)
-		pairStr := fmt.Sprintf("%4s/%s", e.otherAsset, assetCode)
+	for i := 0; i < maxDisplay; i++ {
+		if i < len(entries) {
+			e := entries[i]
+			// Format pair as "CODE/ASSET" (4 chars for code)
+			pairStr := fmt.Sprintf("%4s/%s", e.otherAsset, assetCode)
 
-		// Format amount with 2 decimals
-		amtFormatted := formatFloatWithCommas(e.numericAmt)
-		if idx := strings.Index(amtFormatted, "."); idx >= 0 {
-			intPart := amtFormatted[:idx]
-			decPart := amtFormatted[idx+1:]
-			if len(decPart) > 2 {
-				decPart = decPart[:2]
+			// Format amount with 2 decimals
+			amtFormatted := formatFloatWithCommas(e.numericAmt)
+			if idx := strings.Index(amtFormatted, "."); idx >= 0 {
+				intPart := amtFormatted[:idx]
+				decPart := amtFormatted[idx+1:]
+				if len(decPart) > 2 {
+					decPart = decPart[:2]
+				}
+				amtFormatted = intPart + "." + decPart
 			}
-			amtFormatted = intPart + "." + decPart
-		}
-		amtFormatted = padLeftVis(amtFormatted, 14)
+			amtFormatted = padLeftVis(amtFormatted, 14)
 
-		// Calculate bar ratio
-		ratio := 0.0
-		if maxAmt > 0 {
-			ratio = e.numericAmt / maxAmt
-		}
-		bar := depthBar(barWidth, ratio, lipgloss.Color("24"))
+			// Calculate bar ratio
+			ratio := 0.0
+			if maxAmt > 0 {
+				ratio = e.numericAmt / maxAmt
+			}
+			bar := depthBar(barWidth, ratio, lipgloss.Color("24"))
 
-		line := lipgloss.JoinHorizontal(lipgloss.Top, pairStr, "  ", amtFormatted, " ", bar)
-		lines = append(lines, line)
+			line := lipgloss.JoinHorizontal(lipgloss.Top, pairStr, "  ", amtFormatted, " ", bar)
+			lines = append(lines, line)
+		} else {
+			// Pad with empty line if fewer than 5 pools
+			lines = append(lines, "")
+		}
 	}
 
 	return strings.Join(lines, "\n")
@@ -1533,27 +1448,19 @@ func (m model) bottomLine() string {
 	var shortcuts string
 	switch m.currentScreen {
 	case screenLanding:
-		shortcuts = "enter: ⏎  q: quit"
-	case screenServiceSelection:
 		if m.showPairPopup {
 			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
 		} else {
-			shortcuts = "1: pairs  2: assets  q: quit"
+			shortcuts = "enter: ⏎  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
 			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
 		} else {
-			shortcuts = "p: pairs  b: back  ,/. depth  z: debug  q: quit"
+			shortcuts = "p: pairs  z: debug  q: quit"
 		}
 	case screenPairDebug:
-		shortcuts = "z: pair info  b: back  q: quit"
-	case screenSelectAsset:
-		shortcuts = "↑/↓: navigate  enter: select  esc: back  q: quit"
-	case screenViewExposure:
-		shortcuts = "b: back  z: debug  q: quit"
-	case screenExposureDebug:
-		shortcuts = "z: exposure  q: quit"
+		shortcuts = "z: pair info  q: quit"
 	case screenPairInput:
 		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
 	default:
@@ -1633,57 +1540,16 @@ func landingView(m model) string {
 	creditLine := strings.Repeat(" ", gap) + dimStyle.Render(creditText)
 
 	bottom := m.bottomLine()
-	return lipgloss.JoinVertical(lipgloss.Left, content, padding, creditLine, bottom)
-}
-
-func serviceSelectionView(m model) string {
-	lines := []string{
-		renderVersionInfo(),
-		"",
-		renderHeader(),
-		renderSubtitle("Service Selection"),
-		"",
-		dimStyle.Render("Choose a service:"),
-		"",
-		selectedStyle.Render("  1. View Asset Pairs"),
-		dimStyle.Render("     Monitor order books, trades, and liquidity pools for asset pairs"),
-		"",
-		selectedStyle.Render("  2. View Single Asset Exposure"),
-		dimStyle.Render("     View all liquidity pools containing a specific asset"),
-		"",
-	}
-
-	if m.err != nil {
-		lines = append(lines, "")
-		lines = append(lines, errorStyle.Render(m.err.Error()))
-	}
-
-	content := strings.Join(lines, "\n")
-	contentHeight := lipgloss.Height(content)
-	targetHeight := 60
-	if m.height > 0 {
-		targetHeight = m.height
-	}
-	paddingLines := targetHeight - contentHeight - 2
-	if paddingLines < 0 {
-		paddingLines = 0
-	}
-	padding := strings.Repeat("\n", paddingLines)
-
-	bottom := m.bottomLine()
-	baseView := lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+	baseView := lipgloss.JoinVertical(lipgloss.Left, content, padding, creditLine, bottom)
 
 	// Overlay popup if active
 	if m.showPairPopup {
 		popup := pairSelectorPopup(m)
-		// Calculate screen dimensions
 		screenWidth := 140
 		screenHeight := targetHeight
 		if m.width > 0 {
 			screenWidth = m.width
 		}
-
-		// Center popup using lipgloss Place
 		return lipgloss.Place(screenWidth, screenHeight, lipgloss.Center, lipgloss.Center, popup, lipgloss.WithWhitespaceChars(" "), lipgloss.WithWhitespaceForeground(lipgloss.Color("0")))
 	}
 
@@ -1727,214 +1593,6 @@ func pairInputView(m model) string {
 	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
 }
 
-func selectAssetView(m model) string {
-	lines := []string{
-		renderVersionInfo(),
-		"",
-		renderHeader(),
-		renderSubtitle("Select Asset"),
-		"",
-	}
-
-	// Build list of unique assets from curatedAssets
-	assetList := []string{"XLM", "USDZ", "ZARZ", "EURZ", "XAUZ", "BTCZ", "USDC"}
-
-	for i, assetCode := range assetList {
-		label := assetCode
-		if i == m.assetIndex {
-			lines = append(lines, selectedStyle.Render("> "+label))
-		} else {
-			lines = append(lines, pairItemStyle.Render("  "+label))
-		}
-	}
-
-	if m.err != nil {
-		lines = append(lines, "")
-		lines = append(lines, errorStyle.Render(m.err.Error()))
-	}
-
-	content := strings.Join(lines, "\n")
-	contentHeight := lipgloss.Height(content)
-	targetHeight := 60
-	if m.height > 0 {
-		targetHeight = m.height
-	}
-	paddingLines := targetHeight - contentHeight - 2
-	if paddingLines < 0 {
-		paddingLines = 0
-	}
-	padding := strings.Repeat("\n", paddingLines)
-
-	bottom := m.bottomLine()
-	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
-}
-
-func viewExposureView(m model) string {
-	lines := []string{
-		renderVersionInfo(),
-		"",
-		renderHeader(),
-		renderSubtitle("View Exposure - " + assetShort(m.selectedAsset)),
-		"",
-	}
-
-	if len(m.exposurePools) == 0 {
-		lines = append(lines, dimStyle.Render("Loading liquidity pools..."))
-	} else {
-		// Build exposure entries with locked amounts for selected asset
-		type exposureEntry struct {
-			otherAsset string
-			amount     string
-			numericAmt float64
-		}
-
-		selectedCode := assetShort(m.selectedAsset)
-		entries := []exposureEntry{}
-
-		for _, pool := range m.exposurePools {
-			// Find which index has the selected asset
-			var selectedIdx, otherIdx int
-			if strings.EqualFold(pool.Codes[0], selectedCode) {
-				selectedIdx = 0
-				otherIdx = 1
-			} else if strings.EqualFold(pool.Codes[1], selectedCode) {
-				selectedIdx = 1
-				otherIdx = 0
-			} else {
-				continue // pool doesn't contain selected asset
-			}
-
-			// Parse the locked amount to float for sorting
-			amtStr := pool.Locked[selectedIdx]
-			// Remove spaces and commas for parsing
-			amtClean := strings.ReplaceAll(strings.ReplaceAll(amtStr, " ", ""), ",", "")
-			numeric, err := strconv.ParseFloat(amtClean, 64)
-			if err != nil {
-				numeric = 0
-			}
-
-			entries = append(entries, exposureEntry{
-				otherAsset: pool.Codes[otherIdx],
-				amount:     amtStr,
-				numericAmt: numeric,
-			})
-		}
-
-		// Sort by numeric amount descending
-		for i := 0; i < len(entries); i++ {
-			for j := i + 1; j < len(entries); j++ {
-				if entries[j].numericAmt > entries[i].numericAmt {
-					entries[i], entries[j] = entries[j], entries[i]
-				}
-			}
-		}
-
-		// Find max amount for bar scaling
-		maxAmt := 0.0
-		for _, e := range entries {
-			if e.numericAmt > maxAmt {
-				maxAmt = e.numericAmt
-			}
-		}
-
-		// Render compact view
-		barWidth := 20 // width for the background bar
-		for _, e := range entries {
-			// Format pair as "CODE/ZARZ" (4 chars for code + 1 for / + selected asset code)
-			pairStr := fmt.Sprintf("%4s/%s", e.otherAsset, selectedCode)
-
-			// Format amount with thousand separators and 2 decimal places
-			amtFormatted := formatFloatWithCommas(e.numericAmt)
-			// Trim to 2 decimals for compact display
-			if idx := strings.Index(amtFormatted, "."); idx >= 0 {
-				intPart := amtFormatted[:idx]
-				decPart := amtFormatted[idx+1:]
-				if len(decPart) > 2 {
-					decPart = decPart[:2]
-				}
-				amtFormatted = intPart + "." + decPart
-			}
-			// Right-align the amount (16 chars to accommodate large numbers with spaces)
-			amtFormatted = padLeftVis(amtFormatted, 16)
-
-			// Calculate bar ratio for background color
-			ratio := 0.0
-			if maxAmt > 0 {
-				ratio = e.numericAmt / maxAmt
-			}
-			bar := depthBar(barWidth, ratio, lipgloss.Color("24")) // same teal as bid bars
-
-			line := lipgloss.JoinHorizontal(lipgloss.Top, pairStr, "   ", amtFormatted, " ", bar)
-			lines = append(lines, line)
-		}
-	}
-
-	if m.err != nil {
-		lines = append(lines, "")
-		lines = append(lines, errorStyle.Render(m.err.Error()))
-	}
-
-	content := strings.Join(lines, "\n")
-	contentHeight := lipgloss.Height(content)
-	targetHeight := 60
-	if m.height > 0 {
-		targetHeight = m.height
-	}
-	paddingLines := targetHeight - contentHeight - 2
-	if paddingLines < 0 {
-		paddingLines = 0
-	}
-	padding := strings.Repeat("\n", paddingLines)
-
-	bottom := m.bottomLine()
-	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
-}
-
-func exposureDebugView(m model) string {
-	lines := []string{
-		renderVersionInfo(),
-		"",
-		renderHeader(),
-		renderSubtitle("Exposure Debug"),
-		"",
-	}
-
-	// Selected asset info
-	assetStr := assetString(m.selectedAsset)
-	if assetStr == "native" {
-		assetStr = "XLM:native"
-	}
-	lines = append(lines, dimStyle.Render("Selected asset:"), assetStr)
-	lines = append(lines, "")
-
-	// Pool count
-	lines = append(lines, dimStyle.Render(fmt.Sprintf("Pools found: %d", len(m.exposurePools))))
-	lines = append(lines, "")
-
-	// Debug logs
-	lines = append(lines, boldStyle.Render("Logs (latest)"))
-	logStart := len(m.debugLogs) - 30
-	if logStart < 0 {
-		logStart = 0
-	}
-	for i := logStart; i < len(m.debugLogs); i++ {
-		lines = append(lines, dimStyle.Render(m.debugLogs[i]))
-	}
-
-	content := strings.Join(lines, "\n")
-	contentHeight := lipgloss.Height(content)
-	targetHeight := 60
-	if m.height > 0 {
-		targetHeight = m.height
-	}
-	paddingLines := targetHeight - contentHeight - 2
-	if paddingLines < 0 {
-		paddingLines = 0
-	}
-	padding := strings.Repeat("\n", paddingLines)
-	bottom := m.bottomLine()
-	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
-}
 
 func pairDebugView(m model) string {
 	lines := []string{
