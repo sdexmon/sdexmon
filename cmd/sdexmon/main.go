@@ -21,6 +21,8 @@ import (
 	"github.com/stellar/go/clients/horizonclient"
 	hProtocol "github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/txnbuild"
+
+	"github.com/sdexmon/sdexmon/internal/config"
 )
 
 const (
@@ -39,6 +41,9 @@ const (
 	screenPairInfo
 	screenPairDebug
 	screenPairInput // custom pair input screen
+	screenMaintenance
+	screenPairsManager
+	screenAddPair
 )
 
 const asciiAquila = `███████  ██████  █████  ██████       █████   ██████  ██    ██ ██ ██       █████  
@@ -97,7 +102,13 @@ var curatedPairs = []pairOption{
 	{"XLM", "BTCZ"},
 }
 
-var liquidityPoolIDs = map[string]string{
+// Global configuration loaded from YAML
+var appConfig *config.Config
+var configuredPairs []pairOption
+var liquidityPoolIDs map[string]string
+
+// Fallback curated data (used if config loading fails)
+var fallbackLiquidityPoolIDs = map[string]string{
 	"USDC-USDZ": "314e17d86ffc767a6132fba31cc9f53f23ca359d2db788f26f0d364d75e82c57",
 	"USDZ-USDC": "314e17d86ffc767a6132fba31cc9f53f23ca359d2db788f26f0d364d75e82c57",
 	"USDZ-ZARZ": "d6842cf8f10ec2fc8a4599f23f7b0161bafa228b267714fc3ed6ca6d48d0b13c",
@@ -198,6 +209,20 @@ type model struct {
 	quoteInput    textinput.Model
 	showPairPopup bool // shows pair selector popup overlay
 
+	// maintenance / pairs manager
+	pairsIndex     int // selection in pairs manager
+	maintSelection int // future use
+
+	// add pair form
+	addFieldIndex     int
+	assetACodeInput   textinput.Model
+	assetAIssuerInput textinput.Model
+	assetBCodeInput   textinput.Model
+	assetBIssuerInput textinput.Model
+	poolIDInput       textinput.Model
+	addPairError      string
+	addPairStatus     string
+
 	// liveness
 	lastOrderbookAt time.Time
 	lastTradesAt    time.Time
@@ -225,6 +250,32 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 	q.Prompt = "QUOTE > "
 	q.CharLimit = 80
 
+	// Add Pair form inputs
+	ac := textinput.New()
+	ac.Placeholder = "XLM or CODE"
+	ac.Prompt = "Asset A Code: "
+	ac.CharLimit = 12
+
+	ai := textinput.New()
+	ai.Placeholder = "G... (56 chars) or blank for XLM"
+	ai.Prompt = "Asset A Issuer: "
+	ai.CharLimit = 56
+
+	bc := textinput.New()
+	bc.Placeholder = "XLM or CODE"
+	bc.Prompt = "Asset B Code: "
+	bc.CharLimit = 12
+
+	bi := textinput.New()
+	bi.Placeholder = "G... (56 chars) or blank for XLM"
+	bi.Prompt = "Asset B Issuer: "
+	bi.CharLimit = 56
+
+	pid := textinput.New()
+	pid.Placeholder = "64 hex chars"
+	pid.Prompt = "A+B Liquidity Pool ID: "
+	pid.CharLimit = 64
+
 	// Check for debug mode
 	debugMode := os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1"
 
@@ -251,6 +302,14 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		exposurePools: make([]Liquidity, 0),
 		showPairPopup: false, // Start on landing page, open popup on enter
 		pairIndex:     currentPairIndex(base, quote),
+		pairsIndex:    0,
+		maintSelection: 0,
+		addFieldIndex:  0,
+		assetACodeInput:   ac,
+		assetAIssuerInput: ai,
+		assetBCodeInput:   bc,
+		assetBIssuerInput: bi,
+		poolIDInput:       pid,
 		status:        "Select pair to begin",
 	}
 }
@@ -272,6 +331,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
 			return m, tea.Quit
 		}
+		// Global maintenance shortcut (avoid interfering with text entry in add form)
+		if msg.String() == "m" && m.currentScreen != screenAddPair {
+			m.currentScreen = screenMaintenance
+			m.err = nil
+			return m, nil
+		}
 
 		// Screen-specific navigation
 		switch m.currentScreen {
@@ -288,13 +353,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				case "down", "j":
-					if m.pairIndex < len(curatedPairs)-1 {
+				if m.pairIndex < len(configuredPairs)-1 {
 						m.pairIndex++
 					}
 					return m, nil
 				case "enter":
-					if len(curatedPairs) > 0 {
-						opt := curatedPairs[m.pairIndex]
+				if len(configuredPairs) > 0 {
+					opt := configuredPairs[m.pairIndex]
 						base, ok1 := curatedAssets[opt.Base]
 						quote, ok2 := curatedAssets[opt.Quote]
 						if ok1 && ok2 {
@@ -386,13 +451,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				case "down", "j":
-					if m.pairIndex < len(curatedPairs)-1 {
+				if m.pairIndex < len(configuredPairs)-1 {
 						m.pairIndex++
 					}
 					return m, nil
 				case "enter":
-					if len(curatedPairs) > 0 {
-						opt := curatedPairs[m.pairIndex]
+				if len(configuredPairs) > 0 {
+					opt := configuredPairs[m.pairIndex]
 						base, ok1 := curatedAssets[opt.Base]
 						quote, ok2 := curatedAssets[opt.Quote]
 						if ok1 && ok2 {
@@ -423,16 +488,169 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
-			case "d":
-				m.currentScreen = screenPairDebug
-				return m, nil
-			}
+		case "d":
+			m.currentScreen = screenPairDebug
+			return m, nil
+		}
 
 	case screenPairDebug:
 		switch msg.String() {
 		case "d":
 			m.currentScreen = screenPairInfo
 			return m, nil
+		}
+
+	case screenMaintenance:
+		switch msg.String() {
+		case "1":
+			// View/Edit Asset Pairs
+			m.currentScreen = screenPairsManager
+		if len(configuredPairs) == 0 {
+			return m, nil
+		} else if m.pairsIndex >= len(configuredPairs) {
+			m.pairsIndex = len(configuredPairs) - 1
+			}
+			return m, nil
+		case "b", "esc":
+			m.currentScreen = screenLanding
+			return m, nil
+		}
+
+	case screenPairsManager:
+		switch msg.String() {
+		case "up", "k":
+			if m.pairsIndex > 0 {
+				m.pairsIndex--
+			}
+			return m, nil
+		case "down", "j":
+			if m.pairsIndex < len(configuredPairs)-1 {
+				m.pairsIndex++
+			}
+			return m, nil
+		case "a":
+			// Open add pair form
+			m.currentScreen = screenAddPair
+			m.addFieldIndex = 0
+			m.addPairError = ""
+			m.addPairStatus = ""
+			m.assetACodeInput.SetValue("")
+			m.assetAIssuerInput.SetValue("")
+			m.assetBCodeInput.SetValue("")
+			m.assetBIssuerInput.SetValue("")
+			m.poolIDInput.SetValue("")
+			m.assetACodeInput.Focus()
+			m.assetAIssuerInput.Blur()
+			m.assetBCodeInput.Blur()
+			m.assetBIssuerInput.Blur()
+			m.poolIDInput.Blur()
+			return m, nil
+		case "b", "esc":
+			m.currentScreen = screenMaintenance
+			return m, nil
+		}
+
+	case screenAddPair:
+		switch msg.String() {
+		case "esc", "b":
+			m.currentScreen = screenPairsManager
+			return m, nil
+		case "tab":
+			m.addFieldIndex = (m.addFieldIndex + 1) % 5
+			m.focusAddPairField()
+			return m, nil
+		case "shift+tab":
+			m.addFieldIndex = (m.addFieldIndex + 4) % 5
+			m.focusAddPairField()
+			return m, nil
+		case "enter":
+			// Validate and add pair
+			codeA := strings.ToUpper(strings.TrimSpace(m.assetACodeInput.Value()))
+			issA := strings.TrimSpace(m.assetAIssuerInput.Value())
+			codeB := strings.ToUpper(strings.TrimSpace(m.assetBCodeInput.Value()))
+			issB := strings.TrimSpace(m.assetBIssuerInput.Value())
+			pool := strings.ToLower(strings.TrimSpace(m.poolIDInput.Value()))
+
+			// Normalize native keyword
+			if strings.EqualFold(codeA, "native") { codeA = "XLM"; issA = "" }
+			if strings.EqualFold(codeB, "native") { codeB = "XLM"; issB = "" }
+
+			// Basic validation
+			if codeA == "" || codeB == "" {
+				m.addPairError = "Asset codes are required"
+				return m, nil
+			}
+			if codeA != "XLM" && !isValidIssuer(issA) {
+				m.addPairError = "Asset A issuer must be a valid G... key (56 chars)"
+				return m, nil
+			}
+			if codeB != "XLM" && !isValidIssuer(issB) {
+				m.addPairError = "Asset B issuer must be a valid G... key (56 chars)"
+				return m, nil
+			}
+			if !isValidAssetCode(codeA) || !isValidAssetCode(codeB) {
+				m.addPairError = "Asset codes must be 1-12 A-Z or 0-9"
+				return m, nil
+			}
+			if pool != "" && !isHex64(pool) {
+				m.addPairError = "Pool ID must be 64 hex chars or empty"
+				return m, nil
+			}
+
+			// Add/update assets
+			if _, ok := curatedAssets[codeA]; !ok {
+				if codeA == "XLM" {
+					curatedAssets[codeA] = txnbuild.NativeAsset{}
+				} else {
+					curatedAssets[codeA] = txnbuild.CreditAsset{Code: codeA, Issuer: issA}
+				}
+			}
+			if _, ok := curatedAssets[codeB]; !ok {
+				if codeB == "XLM" {
+					curatedAssets[codeB] = txnbuild.NativeAsset{}
+				} else {
+					curatedAssets[codeB] = txnbuild.CreditAsset{Code: codeB, Issuer: issB}
+				}
+			}
+
+			// Append pair and map pool ids (both directions)
+			// Add pair to configuration and save
+			pairName := fmt.Sprintf("%s/%s", codeA, codeB)
+			baseAsset := formatAssetForYAML(codeA, issA)
+			quoteAsset := formatAssetForYAML(codeB, issB)
+			lpID := strings.TrimSpace(m.poolIDInput.Value())
+			
+			if err := config.AddPair(appConfig, pairName, baseAsset, quoteAsset, lpID); err != nil {
+				m.addPairError = fmt.Sprintf("Failed to save pair: %v", err)
+				return m, nil
+			}
+			
+			// Reload configuration to update internal state
+			if err := loadConfiguration(); err != nil {
+				log.Printf("Warning: Failed to reload config after adding pair: %v", err)
+			}
+			
+			// Add to local arrays for immediate use
+			configuredPairs = append(configuredPairs, pairOption{Base: codeA, Quote: codeB})
+			pairKeyAB := fmt.Sprintf("%s-%s", codeA, codeB)
+			pairKeyBA := fmt.Sprintf("%s-%s", codeB, codeA)
+			liquidityPoolIDs[pairKeyAB] = pool
+			liquidityPoolIDs[pairKeyBA] = pool
+
+			m.pairsIndex = len(configuredPairs) - 1
+			m.currentScreen = screenPairsManager
+			m.addPairError = ""
+			m.addPairStatus = "Pair added"
+			return m, nil
+		default:
+			// Pass other keys to text inputs
+			var c1, c2, c3, c4, c5 tea.Cmd
+		m.assetACodeInput, c1 = m.assetACodeInput.Update(msg)
+		m.assetAIssuerInput, c2 = m.assetAIssuerInput.Update(msg)
+		m.assetBCodeInput, c3 = m.assetBCodeInput.Update(msg)
+		m.assetBIssuerInput, c4 = m.assetBIssuerInput.Update(msg)
+		m.poolIDInput, c5 = m.poolIDInput.Update(msg)
+		return m, tea.Batch(c1, c2, c3, c4, c5)
 		}
 		}
 
@@ -522,6 +740,12 @@ func (m model) View() string {
 		return pairInfoView(m)
 	case screenPairDebug:
 		return pairDebugView(m)
+	case screenMaintenance:
+		return maintenanceView(m)
+	case screenPairsManager:
+		return pairsManagerView(m)
+	case screenAddPair:
+		return addPairView(m)
 	default:
 		return landingView(m)
 	}
@@ -541,16 +765,15 @@ func pairSelectorPopup(m model) string {
 		start = 0
 	}
 	end := start + windowSize
-	if end > len(curatedPairs) {
-		end = len(curatedPairs)
-		start = end - windowSize
-		if start < 0 {
-			start = 0
-		}
+	if end > len(configuredPairs) {
+		end = len(configuredPairs)
+	}
+	if start < 0 {
+		start = 0
 	}
 
 	for i := start; i < end; i++ {
-		p := curatedPairs[i]
+		p := configuredPairs[i]
 		label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
 		if i == m.pairIndex {
 			lines = append(lines, selectedStyle.Render("> "+label))
@@ -666,6 +889,15 @@ func (m model) renderOrderbook() string {
 	allBids := m.orderbook.Bids
 	allAsks := m.orderbook.Asks
 
+	// Get decimal configuration for current pair
+	baseDecimals := 2 // default
+	quoteDecimals := 2 // default
+	if appConfig != nil && m.base != nil && m.quote != nil {
+		baseName := getAssetName(m.base)
+		quoteName := getAssetName(m.quote)
+		baseDecimals, quoteDecimals = appConfig.GetPairDecimals(baseName, quoteName)
+	}
+
 	// Limit to 7 levels per side; we will pad to always show 7
 	maxRows := 7
 	bids := allBids
@@ -724,9 +956,9 @@ func (m model) renderOrderbook() string {
 	for di := 0; di < nA; di++ {
 		idx := nA - 1 - di // worst -> best
 		a := asksBest[idx]
-		pStr := alignDecimalFixed(a.Price, priceIntW, fracW)
-		amtStr := formatWithCommas(formatAmount(a.Amount))
-		cumStr := formatFloatWithCommas(askCumBest[idx])
+		pStr := formatAmountWithDecimals(a.Price, quoteDecimals, priceIntW+1+quoteDecimals)
+		amtStr := formatAmountWithDecimals(a.Amount, baseDecimals, amountW)
+		cumStr := formatAmountWithDecimals(fmt.Sprintf("%.7f", askCumBest[idx]), quoteDecimals, totalW)
 		ratio := 0.0
 		if askMax > 0 {
 			ratio = askCumBest[idx] / askMax
@@ -767,9 +999,9 @@ func (m model) renderOrderbook() string {
 	}
 	for i := 0; i < nB; i++ {
 		b := bids[i]
-		pStr := alignDecimalFixed(b.Price, priceIntW, fracW)
-		amtStr := formatWithCommas(formatAmount(b.Amount))
-		cumStr := formatFloatWithCommas(bidCum[i])
+		pStr := formatAmountWithDecimals(b.Price, quoteDecimals, priceIntW+1+quoteDecimals)
+		amtStr := formatAmountWithDecimals(b.Amount, baseDecimals, amountW)
+		cumStr := formatAmountWithDecimals(fmt.Sprintf("%.7f", bidCum[i]), quoteDecimals, totalW)
 		ratio := 0.0
 		if bidMax > 0 {
 			ratio = bidCum[i] / bidMax
@@ -953,6 +1185,15 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 }
 
 func (m model) renderTrades() string {
+	// Get decimal configuration for current pair
+	baseDecimals := 2 // default
+	quoteDecimals := 2 // default
+	if appConfig != nil && m.base != nil && m.quote != nil {
+		baseName := getAssetName(m.base)
+		quoteName := getAssetName(m.quote)
+		baseDecimals, quoteDecimals = appConfig.GetPairDecimals(baseName, quoteName)
+	}
+
 	rows := []string{boldStyle.Render("TRADES (latest)")}
 	rows = append(rows, dimStyle.Render("ELAPSED   PRICE         AMOUNT"))
 	limit := 15 // 7 + 7 + 1
@@ -961,8 +1202,14 @@ func (m model) renderTrades() string {
 	for i := len(m.trades) - 1; i >= 0 && count < limit; i-- {
 		t := m.trades[i]
 		isSell := t.BaseIsSeller
-		price := alignNum(tradePriceString(t.Price))
-		amount := alignNum(formatAmount(t.BaseAmount))
+		
+		// Format price with quote decimals
+		priceFloat := float64(t.Price.N) / float64(t.Price.D)
+		price := formatAmountWithDecimals(fmt.Sprintf("%.7f", priceFloat), quoteDecimals, 12)
+		
+		// Format amount with base decimals
+		amount := formatAmountWithDecimals(t.BaseAmount, baseDecimals, 12)
+		
 		elapsed := humanElapsedShort(now.Sub(time.Time(t.LedgerCloseTime)))
 		line := fmt.Sprintf("%s  %s  %s", padLeftVis(elapsed, 8), price, amount)
 		if isSell {
@@ -1147,12 +1394,127 @@ func applyCounterAsset(req *horizonclient.TradeRequest, a txnbuild.Asset) {
 func currentPairIndex(base, quote txnbuild.Asset) int {
 	bc := assetShort(base)
 	qc := assetShort(quote)
-	for i, p := range curatedPairs {
+	for i, p := range configuredPairs {
 		if p.Base == bc && p.Quote == qc {
 			return i
 		}
 	}
 	return 0
+}
+
+// loadConfiguration loads the YAML config and converts it to internal format
+func loadConfiguration() error {
+	var err error
+	appConfig, err = config.LoadConfig()
+	if err != nil {
+		// Use fallback data
+		configuredPairs = curatedPairs
+		liquidityPoolIDs = fallbackLiquidityPoolIDs
+		return err
+	}
+
+	// Convert YAML pairs to internal pairOption format
+	configuredPairs = make([]pairOption, 0, len(appConfig.Pairs))
+	liquidityPoolIDs = make(map[string]string)
+	
+	for _, pair := range appConfig.Pairs {
+		// Parse base and quote assets from YAML format
+		base, err := config.ParseAsset(pair.Base)
+		if err != nil {
+			log.Printf("Warning: Invalid base asset in config pair %s: %v", pair.Name, err)
+			continue
+		}
+		quote, err := config.ParseAsset(pair.Quote)
+		if err != nil {
+			log.Printf("Warning: Invalid quote asset in config pair %s: %v", pair.Name, err)
+			continue
+		}
+		
+		// Add to configured pairs
+		configuredPairs = append(configuredPairs, pairOption{
+			Base:  assetShort(base),
+			Quote: assetShort(quote),
+		})
+		
+		// Add LP mapping if present
+		if pair.LP != "" {
+			baseCode := assetShort(base)
+			quoteCode := assetShort(quote)
+			pairKey := baseCode + "-" + quoteCode
+			reversePairKey := quoteCode + "-" + baseCode
+			
+			liquidityPoolIDs[pairKey] = pair.LP
+			liquidityPoolIDs[reversePairKey] = pair.LP
+		}
+	}
+	
+	// Add fallback pairs if no configured pairs loaded
+	if len(configuredPairs) == 0 {
+		configuredPairs = curatedPairs
+	}
+	
+	// Add fallback LP IDs for any missing ones
+	for key, poolID := range fallbackLiquidityPoolIDs {
+		if liquidityPoolIDs[key] == "" {
+			liquidityPoolIDs[key] = poolID
+		}
+	}
+	
+	return nil
+}
+
+
+// formatAssetForYAML converts asset code and issuer to YAML format
+// formatAssetForYAML converts asset code and issuer to YAML format
+func formatAssetForYAML(code, issuer string) string {
+	code = strings.TrimSpace(code)
+	issuer = strings.TrimSpace(issuer)
+	
+	if code == "XLM" || strings.EqualFold(code, "native") || issuer == "" {
+		return "XLM:native"
+	}
+	
+	return fmt.Sprintf("%s:%s", code, issuer)
+}
+
+// getAssetName converts a txnbuild.Asset to YAML asset name format
+func getAssetName(asset txnbuild.Asset) string {
+	switch v := asset.(type) {
+	case txnbuild.NativeAsset:
+		return "XLM:native"
+	case txnbuild.CreditAsset:
+		return fmt.Sprintf("%s:%s", v.Code, v.Issuer)
+	default:
+		return ""
+	}
+}
+
+// formatAmountWithDecimals formats an amount with specific decimal places and padding
+func formatAmountWithDecimals(s string, decimals int, minWidth int) string {
+	if s == "" {
+		s = "0"
+	}
+	
+	// Parse the number to ensure it's valid
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		f = 0
+	}
+	
+	// Format to specified decimals
+	formatted := strconv.FormatFloat(f, 'f', decimals, 64)
+	
+	// Pad to minimum width
+	if minWidth > 0 && len(formatted) < minWidth {
+		formatted = strings.Repeat(" ", minWidth-len(formatted)) + formatted
+	}
+	
+	return formatted
+}
+
+// formatPriceWithDecimals formats a price with specific decimal places
+func formatPriceWithDecimals(f float64, decimals int) string {
+	return strconv.FormatFloat(f, 'f', decimals, 64)
 }
 
 func parseAsset(s string) (txnbuild.Asset, error) {
@@ -1450,20 +1812,26 @@ func (m model) bottomLine() string {
 	switch m.currentScreen {
 	case screenLanding:
 		if m.showPairPopup {
-			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
+			shortcuts = "↑/↓: navigate  enter: select  esc: close  m: maintenance  q: quit"
 		} else {
-			shortcuts = "enter: ⏎  q: quit"
+			shortcuts = "enter: ⏎  m: maintenance  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
-			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
+			shortcuts = "↑/↓: navigate  enter: select  esc: close  m: maintenance  q: quit"
 		} else {
-			shortcuts = "p: pairs  d: detail  q: quit"
+			shortcuts = "p: pairs  d: detail  m: maintenance  q: quit"
 		}
 	case screenPairDebug:
-		shortcuts = "d: back  q: quit"
+		shortcuts = "d: back  m: maintenance  q: quit"
 	case screenPairInput:
-		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
+		shortcuts = "enter: apply  tab: switch field  m: maintenance  esc: back  q: quit"
+	case screenMaintenance:
+		shortcuts = "1: asset pairs  b: back  q: quit"
+	case screenPairsManager:
+		shortcuts = "↑/↓: navigate  a: add  b: back  q: quit"
+	case screenAddPair:
+		shortcuts = "enter: save  tab: next  esc: cancel  q: quit"
 	default:
 		shortcuts = "q: quit"
 	}
@@ -1697,6 +2065,172 @@ func pairDebugView(m model) string {
 	padding := strings.Repeat("\n", paddingLines)
 	bottom := m.bottomLine()
 	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+}
+
+// ----- Maintenance & Asset Pair Management Views -----
+
+func maintenanceView(m model) string {
+	lines := []string{
+		renderVersionInfo(),
+		"",
+		renderHeader(),
+		renderSubtitle("Maintenance"),
+		"",
+		"1. View/Edit Asset Pairs",
+	}
+
+	content := strings.Join(lines, "\n")
+	contentHeight := lipgloss.Height(content)
+	targetHeight := 60
+	if m.height > 0 {
+		targetHeight = m.height
+	}
+	paddingLines := targetHeight - contentHeight - 2
+	if paddingLines < 0 {
+		paddingLines = 0
+	}
+	padding := strings.Repeat("\n", paddingLines)
+	bottom := m.bottomLine()
+	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+}
+
+func pairsManagerView(m model) string {
+	lines := []string{
+		renderVersionInfo(),
+		"",
+		renderHeader(),
+		renderSubtitle("View/Edit Asset Pairs"),
+		"",
+		boldStyle.Render("Current Pairs"),
+	}
+
+	for i, p := range configuredPairs {
+		label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
+		if i == m.pairsIndex {
+			lines = append(lines, selectedStyle.Render("> "+label))
+		} else {
+			lines = append(lines, pairItemStyle.Render("  "+label))
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("↑/↓: navigate  a: add  b: back  q: quit"))
+
+	content := strings.Join(lines, "\n")
+	contentHeight := lipgloss.Height(content)
+	targetHeight := 60
+	if m.height > 0 {
+		targetHeight = m.height
+	}
+	paddingLines := targetHeight - contentHeight - 2
+	if paddingLines < 0 {
+		paddingLines = 0
+	}
+	padding := strings.Repeat("\n", paddingLines)
+	bottom := m.bottomLine()
+	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+}
+
+func (m *model) focusAddPairField() {
+	// Set focus based on addFieldIndex
+	m.assetACodeInput.Blur()
+	m.assetAIssuerInput.Blur()
+	m.assetBCodeInput.Blur()
+	m.assetBIssuerInput.Blur()
+	m.poolIDInput.Blur()
+	switch m.addFieldIndex {
+	case 0:
+		m.assetACodeInput.Focus()
+	case 1:
+		m.assetAIssuerInput.Focus()
+	case 2:
+		m.assetBCodeInput.Focus()
+	case 3:
+		m.assetBIssuerInput.Focus()
+	case 4:
+		m.poolIDInput.Focus()
+	}
+}
+
+func addPairView(m model) string {
+	// Ensure some field has focus
+	if !m.assetACodeInput.Focused() && !m.assetAIssuerInput.Focused() && !m.assetBCodeInput.Focused() && !m.assetBIssuerInput.Focused() && !m.poolIDInput.Focused() {
+		m.focusAddPairField()
+	}
+
+	lines := []string{
+		renderVersionInfo(),
+		"",
+		renderHeader(),
+		renderSubtitle("Add Asset Pair"),
+		"",
+		"Asset A Code:",
+		m.assetACodeInput.View(),
+		"Asset A Issuer:",
+		m.assetAIssuerInput.View(),
+		"Asset B Code:",
+		m.assetBCodeInput.View(),
+		"Asset B Issuer:",
+		m.assetBIssuerInput.View(),
+		"A+B Liquidity Pool ID:",
+		m.poolIDInput.View(),
+		"",
+		dimStyle.Render("Use 'XLM' or 'native' for native asset; issuer is ignored."),
+	}
+	if m.addPairError != "" {
+		lines = append(lines, "")
+		lines = append(lines, errorStyle.Render(m.addPairError))
+	}
+
+	content := strings.Join(lines, "\n")
+	contentHeight := lipgloss.Height(content)
+	targetHeight := 60
+	if m.height > 0 {
+		targetHeight = m.height
+	}
+	paddingLines := targetHeight - contentHeight - 2
+	if paddingLines < 0 {
+		paddingLines = 0
+	}
+	padding := strings.Repeat("\n", paddingLines)
+	bottom := m.bottomLine()
+	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
+}
+
+// Validation helpers
+func isValidAssetCode(code string) bool {
+	if len(code) < 1 || len(code) > 12 {
+		return false
+	}
+	for _, r := range code {
+		if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidIssuer(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) != 56 {
+		return false
+	}
+	if !strings.HasPrefix(s, "G") {
+		return false
+	}
+	return true
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func horizonURL() string {
@@ -2200,6 +2734,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Printf("%s (build %s)\n", appVersion, gitCommit)
 		os.Exit(0)
+	}
+
+	// Load configuration from YAML
+	if err := loadConfiguration(); err != nil {
+		log.Printf("Warning: Failed to load config: %v, using fallback data", err)
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
