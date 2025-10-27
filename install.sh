@@ -60,6 +60,50 @@ get_latest_version() {
     log_info "Latest version: $VERSION"
 }
 
+# Create wrapper script for proper environment setup
+create_wrapper() {
+    local wrapper_path="${INSTALL_DIR}/${BINARY_NAME}"
+    local binary_path="${INSTALL_DIR}/.${BINARY_NAME}-bin"
+    
+    log_info "Creating wrapper script..."
+    
+    # Create wrapper with proper environment
+    cat > "$wrapper_path.tmp" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Safe defaults for running sdexmon
+export HORIZON_URL="${HORIZON_URL:-https://horizon.stellar.org}"
+export DEBUG="${DEBUG:-true}"
+
+# Set terminal window title
+printf '\033]0;sdexmon\007'
+
+# Set fixed terminal size (140 columns x 60 rows)
+if command -v tput >/dev/null 2>&1; then
+  printf '\e[8;60;140t'
+fi
+
+# Run the actual binary
+exec "$(dirname "$0")/.sdexmon-bin" "$@"
+EOF
+    
+    # Move existing binary to hidden location if reinstalling
+    if [ -f "$wrapper_path" ] && [ ! -L "$wrapper_path" ]; then
+        sudo mv "$wrapper_path" "$binary_path" 2>/dev/null || true
+    fi
+    
+    # Install wrapper
+    if ! sudo mv "$wrapper_path.tmp" "$wrapper_path"; then
+        log_error "Failed to install wrapper script"
+        rm -f "$wrapper_path.tmp"
+        return 1
+    fi
+    
+    sudo chmod +x "$wrapper_path"
+    log_info "✅ Wrapper script created"
+}
+
 # Download and install binary
 install_binary() {
     local filename="${BINARY_NAME}_${VERSION#v}_${OS}_${ARCH}"
@@ -88,16 +132,19 @@ install_binary() {
         sudo mkdir -p "$INSTALL_DIR"
     fi
     
-    # Install binary
+    # Install binary with hidden name (wrapper will call it)
     log_info "Installing to $INSTALL_DIR..."
-    if ! sudo cp "${temp_dir}/${BINARY_NAME}" "$INSTALL_DIR/"; then
+    if ! sudo cp "${temp_dir}/${BINARY_NAME}" "$INSTALL_DIR/.${BINARY_NAME}-bin"; then
         log_error "Failed to install binary. Do you have permission to write to $INSTALL_DIR?"
         rm -rf "$temp_dir"
         exit 1
     fi
     
     # Make executable
-    sudo chmod +x "$INSTALL_DIR/${BINARY_NAME}"
+    sudo chmod +x "$INSTALL_DIR/.${BINARY_NAME}-bin"
+    
+    # Create wrapper script
+    create_wrapper
     
     # Cleanup
     rm -rf "$temp_dir"

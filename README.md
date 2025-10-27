@@ -29,7 +29,8 @@ curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | ba
 This will:
 - Detect your platform (macOS, Linux, Windows)
 - Download the appropriate binary from GitHub releases
-- Install to `/usr/local/bin`
+- Install to `/usr/local/bin` with proper environment wrapper
+- Automatically set DEBUG mode and optimal terminal size (140×60)
 - Make the binary executable
 
 **Custom install directory:**
@@ -85,6 +86,8 @@ The application starts with a service selection menu:
 
 ### Environment Variables
 
+**Note:** The installer creates a wrapper script that automatically sets `DEBUG=true` and optimal terminal size. To override defaults:
+
 ```bash
 # Horizon endpoint (default: https://horizon.stellar.org)
 export HORIZON_URL="https://horizon.stellar.org"
@@ -93,8 +96,8 @@ export HORIZON_URL="https://horizon.stellar.org"
 export BASE_ASSET="native"  # or CODE:ISSUER
 export QUOTE_ASSET="USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
-# Enable debug mode
-export DEBUG="true"
+# Disable debug mode (enabled by default via wrapper)
+export DEBUG="false"
 ```
 
 ## Development

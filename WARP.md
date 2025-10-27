@@ -14,18 +14,30 @@ Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Fea
 Key files:
 - `main.go`: entire TUI (~2085 lines) containing routing, model/update/view, Horizon calls, LP fetch, key bindings
 - `run`: convenience launcher script that sets safe defaults (Horizon URL, debug mode, terminal size) and runs `go run .`
+- `install.sh`: installer script that creates wrapper for proper environment setup
 - `go.mod`: dependency manifest (Bubble Tea, Lip Gloss, Stellar Go SDK)
 - `ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
+- `MIGRATION.md`: guide for users upgrading from pre-wrapper installations
 - `.env`: local environment variables (not tracked in git)
 - `tui`: compiled binary
 
 ## Commands
 
-- Quick start (recommended):
+- Quick start (recommended for development):
   ```bash
   ./run
   ```
   Sets `HORIZON_URL` to public Stellar Horizon, enables debug, adjusts terminal size, and executes `go run .`.
+
+- Install for production use:
+  ```bash
+  curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
+  ```
+  Installs binary as `.sdexmon-bin` and creates wrapper script `sdexmon` that:
+  - Sets `DEBUG=true` by default
+  - Configures optimal terminal size (140×60)
+  - Sets default Horizon URL
+  - Runs the actual binary
 
 - Run without the helper script:
   ```bash
