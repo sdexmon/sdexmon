@@ -143,7 +143,7 @@ install_binary() {
     fi
     
     # Make executable
-    sudo chmod +x "$INSTALL_DIR/.${BINARY_NAME}-bin"
+    sudo chmod 755 "$INSTALL_DIR/.${BINARY_NAME}-bin"
     
     # Create wrapper script
     create_wrapper
