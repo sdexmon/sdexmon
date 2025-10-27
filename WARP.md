@@ -246,6 +246,20 @@ sdexmon/
    - Testing framework not set up
    - Should add: unit tests, mocked API tests, format tests
 
+## Troubleshooting
+
+### Wrong landing page after install
+If you see "SCAR AQUILA" and "Service Selection" instead of the "sdexmon_" landing page:
+- This was a build issue in early releases (v1.0.0-v1.0.3 had incorrect goreleaser config)
+- Solution: Reinstall with the latest version (v0.1.1+)
+  ```bash
+  curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
+  ```
+
+### Version history note
+Versions v1.0.0 through v1.0.3 were released with incorrect build configuration and have been deprecated.
+The correct versioning continues from v0.1.0 → v0.1.1+
+
 ## Go Coding Standards
 
 ### Naming Conventions
@@ -272,19 +286,19 @@ sdexmon/
 
 To align with Go best practices and team standards:
 
-### Phase 1: Module & Build Fixes
-1. Update `go.mod` module name to proper path
-2. Fix `.goreleaser.yml` to point to actual main location
-3. Verify builds work cross-platform
+### Phase 1: Module & Build Fixes ✅
+1. ✅ Update `go.mod` module name to proper path
+2. ✅ Fix `.goreleaser.yml` to point to actual main location (`./cmd/sdexmon`)
+3. ✅ Verify builds work cross-platform
 
-### Phase 2: Code Organization
-1. **Move main.go → cmd/sdexmon/main.go**
-2. **Extract packages to internal/:**
-   - `internal/ui/` - Bubble Tea components, views, routing
-   - `internal/stellar/` - Horizon client wrapper, API calls
-   - `internal/models/` - Data structures (OrderBook, Trade, Liquidity)
-   - `internal/config/` - Environment variable handling
-3. **Maintain single entry point** in cmd/sdexmon/main.go that orchestrates packages
+### Phase 2: Code Organization (Partially Complete)
+1. ✅ **Move main.go → cmd/sdexmon/main.go**
+2. 🟡 **Extract packages to internal/:** (Started)
+   - ❌ `internal/ui/` - Bubble Tea components, views, routing (TODO)
+   - ❌ `internal/stellar/` - Horizon client wrapper, API calls (TODO)
+   - ✅ `internal/models/` - Data structures (OrderBook, Trade, Liquidity)
+   - ✅ `internal/config/` - Environment variable handling
+3. ✅ **Maintain single entry point** in cmd/sdexmon/main.go that orchestrates packages
 
 ### Phase 3: Testing
 1. Add unit tests for data transformations

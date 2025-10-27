@@ -1,8 +1,17 @@
 # Migration Guide
 
-## For Users Who Installed Before Wrapper Script
+## For Users Who Installed Before v0.1.1
 
-If you installed `sdexmon` before version with the wrapper script and notice it looks different than expected, you need to reinstall:
+If you installed `sdexmon` before v0.1.1 and see the wrong landing page ("SCAR AQUILA" instead of "sdexmon_"), you need to reinstall.
+
+### Issue Background
+
+Versions v1.0.0 through v1.0.3 were released with:
+1. Incorrect `.goreleaser.yml` configuration that built from the wrong directory
+2. Missing wrapper script for environment setup
+3. These versions have been **deprecated and removed**
+
+The correct version sequence is: v0.1.0 → v0.1.1+
 
 ### Quick Fix
 

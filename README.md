@@ -1,7 +1,7 @@
 # sdexmon 🪐  
 > Real-time Stellar DEX Monitor — Order Books, Trades, Liquidity Pools — in your Terminal.
 
-[![version](https://img.shields.io/badge/version-v0.1.0-blue.svg)](#)
+[![version](https://img.shields.io/badge/version-v0.1.1-blue.svg)](#)
 [![language](https://img.shields.io/badge/language-Go-00ADD8.svg)](#)
 [![license](https://img.shields.io/badge/license-Custom-blue)](#)
 
