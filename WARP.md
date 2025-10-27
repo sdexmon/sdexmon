@@ -6,10 +6,10 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
 
 Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Features:
 - Asset pair monitoring: order books, trades, and liquidity pools
-- Single asset exposure: view all LPs containing a specific asset
-- Navigation-based routing with service selection landing page
+- Navigation-based routing with pair selection landing page
 - Polls Horizon for order books/trades; fetches LP metrics from stellar.expert
 - Defaults to curated asset pairs, 140×60 layout, and 2–7 decimal rendering
+- **Note:** Maintenance UI has been removed - pairs are now managed via code
 
 Key files:
 - `main.go`: entire TUI (~2085 lines) containing routing, model/update/view, Horizon calls, LP fetch, key bindings
@@ -86,90 +86,104 @@ These environment variables are read at runtime:
 ## Architecture and data flow
 
 - Bubble Tea program in `main.go`
-  - **Routing**: State machine with 9 screens (Landing, Service Selection, Select Pair, Pair Input, Pair Info, Pair Debug, Select Asset, View Exposure, Exposure Debug)
-  - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, exposure pools, UI state
+  - **Routing**: State machine with 4 screens (Landing, Pair Info, Pair Debug, Pair Input)
+  - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, UI state
   - **Init**: when base/quote are set, schedules three tickers (order book, trades, LP)
   - **Update**: Screen-based navigation state machine
-    - Landing: Displays sdexmon ASCII art with version and commit info
-    - Service Selection: choose between pair monitoring or asset exposure
+    - Landing: Displays sdexmon ASCII art with version and commit info + pair selector popup
     - Pair screens: Horizon polling via `fetchOrderbookCmd`, `fetchTradesCmd`, `resolveAndFetchLPCmd`
-    - Asset screens: Exposure fetching via `fetchExposureCmd` (searches liquidityPoolIDs map)
   - **View**: Router switches on currentScreen to render appropriate view
     - Landing: sdexmon ASCII branding with version display (top-left)
     - All other screens: SCAR AQUILA header, subtitle, content, context-aware footer
-    - Pair Info: Three panels (Order Book, Trades, Liquidity Pool)
-    - View Exposure: Lists all LPs containing selected asset
+    - Pair Info: Three panels (Order Book, Trades, Liquidity Pool) + Exposure panels
 
 ## Navigation Flow
 
 ```
-./run → Landing → Service Selection
-  ├─ [1] Select Pair → Pair Info ⇄ Pair Debug
-  └─ [2] Select Asset → View Exposure ⇄ Exposure Debug
+./run → Landing (with Pair Selector Popup)
+         └─ Select Pair → Pair Info ⇄ Pair Debug
+         └─ Custom Input → Pair Info ⇄ Pair Debug
 ```
 
 ## UI Controls
 
 ### Landing Screen
-- `enter` (⏎): Continue to service selection
+- `enter` (⏎): Open pair selector popup
 - `q`: Quit
 
-### Service Selection
-- `1`: View asset pairs
-- `2`: View single asset exposure
-- `q`: Quit
-
-### Select Pair
+### Pair Selector Popup (from Landing)
 - `↑/↓`: Navigate pairs
 - `enter`: Select pair (start monitoring)
-- `a`: Custom pair input
-- `esc`: Back to service selection
+- `esc`: Close popup
 - `q`: Quit
 
-### Pair Input
+### Pair Input (Custom Entry)
 - `tab`: Switch base/quote fields
 - `enter`: Apply and start monitoring
-- `esc`: Back to pair selector
+- `esc`: Back to landing
 - `q`: Quit
 
 ### Pair Info
-- `,/.`: Adjust depth (± clamped 1–7)
-- `d`: Toggle detail view
-- `b`: Back to pair selector
+- `p`: Open pair selector popup
+- `d`: Toggle debug detail view
 - `q`: Quit
 
-### Pair Detail
+### Pair Debug Detail
 - `d`: Back to pair info
-- `b`: Back to pair selector
 - `q`: Quit
 
-### Select Asset
-- `↑/↓`: Navigate assets
-- `enter`: View exposure
-- `esc`: Back to service selection
-- `q`: Quit
+## Trading Pairs Management
 
-### View Exposure
-- `z`: Toggle debug view
-- `b`: Back to asset selector
-- `q`: Quit
+**IMPORTANT:** The maintenance UI has been removed for deployment. Trading pairs are now managed by editing the `internal/models/constants.go` file directly.
 
-### Exposure Debug
-- `z`: Back to exposure view
-- `q`: Quit
+### Adding a New Asset
+
+1. Edit `internal/models/constants.go`
+2. Add to the `CuratedAssets` map:
+   ```go
+   "CODE": txnbuild.CreditAsset{Code: "CODE", Issuer: "G..."},
+   ```
+3. For native XLM, use: `txnbuild.NativeAsset{}`
+4. Find issuer addresses on stellar.expert
+
+### Adding a New Trading Pair
+
+1. Ensure both assets exist in `CuratedAssets`
+2. Add to the `CuratedPairs` slice:
+   ```go
+   {"BASE", "QUOTE"}, // BASE/QUOTE - Description
+   ```
+3. Optionally add liquidity pool ID (both directions):
+   ```go
+   "BASE-QUOTE": "pool_id_64_hex_chars",
+   "QUOTE-BASE": "pool_id_64_hex_chars", // Same ID
+   ```
+
+### Removing a Trading Pair
+
+1. Remove from `CuratedPairs` slice
+2. Remove both directions from `LiquidityPoolIDs` map
+3. Optionally remove unused assets from `CuratedAssets`
+4. Test changes by building and running
+
+### Finding Required Data
+
+- **Asset Issuers**: Use stellar.expert asset search
+- **Liquidity Pool IDs**: Use stellar.expert liquidity pools section
+- **Validation**: Asset codes must be 1-12 chars A-Z/0-9, issuer addresses 56 chars starting with 'G'
 
 ## Data Sources
 
-- **Curated data**:
-  - `curatedAssets`: XLM, USDZ, ZARZ, EURZ, XAUZ, BTCZ, USDC with issuer addresses
-  - `curatedPairs`: Predefined trading pairs
-  - `liquidityPoolIDs`: Static map of pool IDs for known pairs
+- **Curated data** (in `internal/models/constants.go`):
+  - `CuratedAssets`: XLM, USDZ, ZARZ, EURZ, XAUZ, BTCZ, USDC with issuer addresses
+  - `CuratedPairs`: Predefined trading pairs available in pair selector
+  - `LiquidityPoolIDs`: Static map of pool IDs for known pairs (bidirectional)
 
 - **Rendering/layout**:
   - Fixed‑width layout designed for ~140×60
   - All screens: Header + Subtitle + Content + Footer
   - Pair Info: Order Book (left) + Trades (right) / Liquidity Pool (full width)
-  - Decimal alignment: 2–7 places with comma separators
+  - Decimal alignment: 2–7 places with space separators
 
 ## Stellar-Specific Guidelines
 
