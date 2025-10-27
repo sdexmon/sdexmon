@@ -68,6 +68,11 @@ create_wrapper() {
     
     log_info "Creating wrapper script..."
     
+    # Remove existing files if they exist (clean install)
+    if [ -f "$wrapper_path" ]; then
+        sudo rm -f "$wrapper_path"
+    fi
+    
     # Create wrapper with proper environment in temp location
     cat > "$temp_wrapper" << 'EOF'
 #!/usr/bin/env bash
@@ -88,11 +93,6 @@ fi
 # Run the actual binary
 exec "$(dirname "$0")/.sdexmon-bin" "$@"
 EOF
-    
-    # Move existing binary to hidden location if reinstalling
-    if [ -f "$wrapper_path" ] && [ ! -L "$wrapper_path" ]; then
-        sudo mv "$wrapper_path" "$binary_path" 2>/dev/null || true
-    fi
     
     # Install wrapper using sudo
     if ! sudo cp "$temp_wrapper" "$wrapper_path"; then
