@@ -18,13 +18,43 @@ View order books, monitor liquidity pools, and follow live trades — directly i
 
 ## Installation
 
-### From Source
+### Quick Install (Recommended)
+
+Install the latest release with a single command:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
+```
+
+This will:
+- Detect your platform (macOS, Linux, Windows)
+- Download the appropriate binary from GitHub releases
+- Install to `/usr/local/bin`
+- Make the binary executable
+
+**Custom install directory:**
+```bash
+INSTALL_DIR=~/.local/bin curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
+```
+
+### Alternative Methods
+
+#### Manual Download
+1. Go to [Releases](https://github.com/sdexmon/sdexmon/releases/latest)
+2. Download the archive for your platform
+3. Extract and place the binary in your PATH
+
+#### Go Install (if you have Go)
+```bash
+go install github.com/sdexmon/sdexmon@latest
+```
+
+#### From Source
 
 ```bash
 git clone https://github.com/sdexmon/sdexmon.git
 cd sdexmon
-go build -o sdexmon ./cmd/sdexmon
-./sdexmon
+go run .
 ```
 
 ### Quick Start

@@ -1,6 +1,8 @@
+version: 2
 project_name: sdexmon
+
 builds:
-  - main: ./cmd/sdexmon
+  - main: .
     binary: sdexmon
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
@@ -8,9 +10,13 @@ builds:
       - "-s -w"
       - "-X main.appVersion={{.Version}}"
       - "-X main.gitCommit={{.ShortCommit}}"
+
 archives:
-  - format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
 release:
   github:
     owner: sdexmon

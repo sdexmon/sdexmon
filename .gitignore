@@ -38,3 +38,4 @@ tui
 # Development artifacts
 main_monolithic.go
 CHANGES_SUMMARY.md
+dist/
