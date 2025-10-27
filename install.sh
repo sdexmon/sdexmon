@@ -64,11 +64,12 @@ get_latest_version() {
 create_wrapper() {
     local wrapper_path="${INSTALL_DIR}/${BINARY_NAME}"
     local binary_path="${INSTALL_DIR}/.${BINARY_NAME}-bin"
+    local temp_wrapper=$(mktemp)
     
     log_info "Creating wrapper script..."
     
-    # Create wrapper with proper environment
-    cat > "$wrapper_path.tmp" << 'EOF'
+    # Create wrapper with proper environment in temp location
+    cat > "$temp_wrapper" << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -93,13 +94,14 @@ EOF
         sudo mv "$wrapper_path" "$binary_path" 2>/dev/null || true
     fi
     
-    # Install wrapper
-    if ! sudo mv "$wrapper_path.tmp" "$wrapper_path"; then
+    # Install wrapper using sudo
+    if ! sudo cp "$temp_wrapper" "$wrapper_path"; then
         log_error "Failed to install wrapper script"
-        rm -f "$wrapper_path.tmp"
+        rm -f "$temp_wrapper"
         return 1
     fi
     
+    rm -f "$temp_wrapper"
     sudo chmod +x "$wrapper_path"
     log_info "✅ Wrapper script created"
 }
