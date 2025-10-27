@@ -102,7 +102,7 @@ EOF
     fi
     
     rm -f "$temp_wrapper"
-    sudo chmod +x "$wrapper_path"
+    sudo chmod 755 "$wrapper_path"
     log_info "✅ Wrapper script created"
 }
 
