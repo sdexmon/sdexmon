@@ -898,10 +898,14 @@ func (m model) renderOrderbook() string {
 		baseDecimals, quoteDecimals = appConfig.GetPairDecimals(baseName, quoteName)
 	}
 
+	// Filter out outlier bids and asks to prevent display distortion
+	filteredBids := filterOutlierBids(allBids)
+	filteredAsks := filterOutlierAsks(allAsks)
+
 	// Limit to 7 levels per side; we will pad to always show 7
 	maxRows := 7
-	bids := allBids
-	asks := allAsks
+	bids := filteredBids
+	asks := filteredAsks
 	if len(bids) > maxRows {
 		bids = bids[:maxRows]
 	}
@@ -956,8 +960,11 @@ func (m model) renderOrderbook() string {
 	for di := 0; di < nA; di++ {
 		idx := nA - 1 - di // worst -> best
 		a := asksBest[idx]
-		pStr := formatAmountWithDecimals(a.Price, quoteDecimals, priceIntW+1+quoteDecimals)
+		// Price: always use 7 decimals for better granularity
+		pStr := formatAmountWithDecimals(a.Price, 7, priceIntW+1+7)
+		// Amount: use configured baseDecimals
 		amtStr := formatAmountWithDecimals(a.Amount, baseDecimals, amountW)
+		// Total: use configured quoteDecimals
 		cumStr := formatAmountWithDecimals(fmt.Sprintf("%.7f", askCumBest[idx]), quoteDecimals, totalW)
 		ratio := 0.0
 		if askMax > 0 {
@@ -999,8 +1006,11 @@ func (m model) renderOrderbook() string {
 	}
 	for i := 0; i < nB; i++ {
 		b := bids[i]
-		pStr := formatAmountWithDecimals(b.Price, quoteDecimals, priceIntW+1+quoteDecimals)
+		// Price: always use 7 decimals for better granularity
+		pStr := formatAmountWithDecimals(b.Price, 7, priceIntW+1+7)
+		// Amount: use configured baseDecimals
 		amtStr := formatAmountWithDecimals(b.Amount, baseDecimals, amountW)
+		// Total: use configured quoteDecimals
 		cumStr := formatAmountWithDecimals(fmt.Sprintf("%.7f", bidCum[i]), quoteDecimals, totalW)
 		ratio := 0.0
 		if bidMax > 0 {
@@ -1020,6 +1030,66 @@ func (m model) renderOrderbook() string {
 	}
 
 	return lipgloss.NewStyle().Render(strings.Join(rows, "\n"))
+}
+
+// filterOutlierBids removes bids that are <10% of the best bid or >1000% of the best bid
+func filterOutlierBids(bids []hProtocol.PriceLevel) []hProtocol.PriceLevel {
+	if len(bids) == 0 {
+		return bids
+	}
+
+	// Get best bid (highest price - first in the list)
+	bestBidPrice, err := strconv.ParseFloat(bids[0].Price, 64)
+	if err != nil || bestBidPrice <= 0 {
+		return bids
+	}
+
+	// Filter out bids that are <10% or >1000% of the best bid
+	minBidPrice := bestBidPrice * 0.10  // 10% minimum
+	maxBidPrice := bestBidPrice * 10.0   // 1000% maximum
+	filtered := make([]hProtocol.PriceLevel, 0, len(bids))
+
+	for _, bid := range bids {
+		bidPrice, err := strconv.ParseFloat(bid.Price, 64)
+		if err != nil {
+			continue
+		}
+		// Keep bids that are between 10% and 1000% of best bid
+		if bidPrice >= minBidPrice && bidPrice <= maxBidPrice {
+			filtered = append(filtered, bid)
+		}
+	}
+
+	return filtered
+}
+
+// filterOutlierAsks removes asks that are >1000% (10x) of the best ask
+func filterOutlierAsks(asks []hProtocol.PriceLevel) []hProtocol.PriceLevel {
+	if len(asks) == 0 {
+		return asks
+	}
+
+	// Get best ask (lowest price - first in the list)
+	bestAskPrice, err := strconv.ParseFloat(asks[0].Price, 64)
+	if err != nil || bestAskPrice <= 0 {
+		return asks
+	}
+
+	// Filter out asks that are >1000% (10x) of the best ask
+	maxAskPrice := bestAskPrice * 10.0
+	filtered := make([]hProtocol.PriceLevel, 0, len(asks))
+
+	for _, ask := range asks {
+		askPrice, err := strconv.ParseFloat(ask.Price, 64)
+		if err != nil {
+			continue
+		}
+		if askPrice <= maxAskPrice {
+			filtered = append(filtered, ask)
+		}
+	}
+
+	return filtered
 }
 
 func firstNonEmpty(vals ...string) string {
