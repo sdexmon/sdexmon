@@ -200,11 +200,14 @@ type model struct {
 	height int
 
 	// input and selection state
-	pairIndex     int
-	assetIndex    int
-	baseInput     textinput.Model
-	quoteInput    textinput.Model
-	showPairPopup bool // shows pair selector popup overlay
+	pairIndex      int
+	assetIndex     int
+	baseInput      textinput.Model
+	quoteInput     textinput.Model
+	showPairPopup  bool // shows pair selector popup overlay
+	searchInput    textinput.Model // search input for pair selector
+	searchMode     bool // whether search is active in pair selector
+	filteredPairs  []pairOption // filtered list based on search
 
 
 	// liveness
@@ -234,6 +237,11 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 	q.Prompt = "QUOTE > "
 	q.CharLimit = 80
 
+	s := textinput.New()
+	s.Placeholder = "Search pairs..."
+	s.Prompt = "🔍 "
+	s.CharLimit = 40
+
 
 	// Check for debug mode
 	debugMode := os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1"
@@ -256,6 +264,9 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		trades:        make([]hProtocol.Trade, 0, 64),
 		baseInput:     b,
 		quoteInput:    q,
+		searchInput:   s,
+		searchMode:    false,
+		filteredPairs: configuredPairs,
 		debugMode:     debugMode,
 		debugLogs:     make([]string, 0, 100),
 		exposurePools: make([]Liquidity, 0),
@@ -288,9 +299,73 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenLanding:
 			// Handle popup pair selector if open from landing
 			if m.showPairPopup {
+				// Search mode handling
+				if m.searchMode {
+					switch msg.String() {
+					case "esc":
+						// Exit search mode
+						m.searchMode = false
+						m.searchInput.Blur()
+						m.searchInput.SetValue("")
+						m.filteredPairs = configuredPairs
+						m.pairIndex = 0
+						return m, nil
+					case "enter":
+						// Select current filtered pair
+						if len(m.filteredPairs) > 0 && m.pairIndex < len(m.filteredPairs) {
+							opt := m.filteredPairs[m.pairIndex]
+							base, ok1 := curatedAssets[opt.Base]
+							quote, ok2 := curatedAssets[opt.Quote]
+							if ok1 && ok2 {
+								m.base, m.quote = base, quote
+								m.tradeCursor = ""
+								m.showPairPopup = false
+								m.searchMode = false
+								m.searchInput.Blur()
+								m.searchInput.SetValue("")
+								m.filteredPairs = configuredPairs
+								m.currentScreen = screenPairInfo
+								m.status = "pair selected"
+								return m, tea.Batch(
+									fetchOrderbookCmd(m.client, m.base, m.quote),
+									fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
+									resolveAndFetchLPCmd(m.client, m.base, m.quote),
+									fetchBaseExposureCmd(m.client, m.base),
+									fetchQuoteExposureCmd(m.client, m.quote),
+									tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
+									tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
+								)
+							}
+						}
+						return m, nil
+					case "up", "k":
+						if m.pairIndex > 0 {
+							m.pairIndex--
+						}
+						return m, nil
+					case "down", "j":
+						if m.pairIndex < len(m.filteredPairs)-1 {
+							m.pairIndex++
+						}
+						return m, nil
+					default:
+						// Update search input and filter pairs
+						var cmd tea.Cmd
+						m.searchInput, cmd = m.searchInput.Update(msg)
+						m.filterPairs()
+						return m, cmd
+					}
+				}
+
+				// Normal navigation mode
 				switch msg.String() {
 				case "esc":
 					m.showPairPopup = false
+					return m, nil
+				case "s":
+					// Enter search mode
+					m.searchMode = true
+					m.searchInput.Focus()
 					return m, nil
 				case "up", "k":
 					if m.pairIndex > 0 {
@@ -386,9 +461,72 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenPairInfo:
 			// Handle popup pair selector if open
 			if m.showPairPopup {
+				// Search mode handling
+				if m.searchMode {
+					switch msg.String() {
+					case "esc":
+						// Exit search mode
+						m.searchMode = false
+						m.searchInput.Blur()
+						m.searchInput.SetValue("")
+						m.filteredPairs = configuredPairs
+						m.pairIndex = 0
+						return m, nil
+					case "enter":
+						// Select current filtered pair
+						if len(m.filteredPairs) > 0 && m.pairIndex < len(m.filteredPairs) {
+							opt := m.filteredPairs[m.pairIndex]
+							base, ok1 := curatedAssets[opt.Base]
+							quote, ok2 := curatedAssets[opt.Quote]
+							if ok1 && ok2 {
+								m.base, m.quote = base, quote
+								m.tradeCursor = ""
+								m.showPairPopup = false
+								m.searchMode = false
+								m.searchInput.Blur()
+								m.searchInput.SetValue("")
+								m.filteredPairs = configuredPairs
+								m.status = "pair updated"
+								return m, tea.Batch(
+									fetchOrderbookCmd(m.client, m.base, m.quote),
+									fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
+									resolveAndFetchLPCmd(m.client, m.base, m.quote),
+									fetchBaseExposureCmd(m.client, m.base),
+									fetchQuoteExposureCmd(m.client, m.quote),
+									tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
+									tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
+								)
+							}
+						}
+						return m, nil
+					case "up", "k":
+						if m.pairIndex > 0 {
+							m.pairIndex--
+						}
+						return m, nil
+					case "down", "j":
+						if m.pairIndex < len(m.filteredPairs)-1 {
+							m.pairIndex++
+						}
+						return m, nil
+					default:
+						// Update search input and filter pairs
+						var cmd tea.Cmd
+						m.searchInput, cmd = m.searchInput.Update(msg)
+						m.filterPairs()
+						return m, cmd
+					}
+				}
+
+				// Normal navigation mode
 				switch msg.String() {
 				case "esc":
 					m.showPairPopup = false
+					return m, nil
+				case "s":
+					// Enter search mode
+					m.searchMode = true
+					m.searchInput.Focus()
 					return m, nil
 				case "up", "k":
 					if m.pairIndex > 0 {
@@ -538,11 +676,46 @@ func (m model) View() string {
 	}
 }
 
+// filterPairs filters the configured pairs based on search query
+func (m *model) filterPairs() {
+	query := strings.ToUpper(strings.TrimSpace(m.searchInput.Value()))
+	if query == "" {
+		m.filteredPairs = configuredPairs
+		m.pairIndex = 0
+		return
+	}
+
+	filtered := []pairOption{}
+	for _, p := range configuredPairs {
+		// Search matches if query is in either base or quote asset
+		if strings.Contains(p.Base, query) || strings.Contains(p.Quote, query) {
+			filtered = append(filtered, p)
+		}
+	}
+	m.filteredPairs = filtered
+	// Reset index if out of bounds
+	if m.pairIndex >= len(m.filteredPairs) {
+		m.pairIndex = 0
+	}
+}
+
 func pairSelectorPopup(m model) string {
 	// Create a compact scrollable pair selector popup
 	lines := []string{
 		boldStyle.Render("SELECT PAIR"),
 		"",
+	}
+
+	// Show search input if in search mode
+	if m.searchMode {
+		lines = append(lines, m.searchInput.View())
+		lines = append(lines, "")
+	}
+
+	// Determine which pairs list to use
+	pairsList := configuredPairs
+	if m.searchMode {
+		pairsList = m.filteredPairs
 	}
 
 	// Show a window of pairs around the selected index
@@ -552,25 +725,33 @@ func pairSelectorPopup(m model) string {
 		start = 0
 	}
 	end := start + windowSize
-	if end > len(configuredPairs) {
-		end = len(configuredPairs)
+	if end > len(pairsList) {
+		end = len(pairsList)
 	}
 	if start < 0 {
 		start = 0
 	}
 
-	for i := start; i < end; i++ {
-		p := configuredPairs[i]
-		label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
-		if i == m.pairIndex {
-			lines = append(lines, selectedStyle.Render("> "+label))
-		} else {
-			lines = append(lines, pairItemStyle.Render("  "+label))
+	if len(pairsList) == 0 {
+		lines = append(lines, dimStyle.Render("No pairs found"))
+	} else {
+		for i := start; i < end; i++ {
+			p := pairsList[i]
+			label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
+			if i == m.pairIndex {
+				lines = append(lines, selectedStyle.Render("> "+label))
+			} else {
+				lines = append(lines, pairItemStyle.Render("  "+label))
+			}
 		}
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render("↑/↓: navigate  enter: select  esc: close"))
+	if m.searchMode {
+		lines = append(lines, dimStyle.Render("↑/↓: navigate  enter: select  esc: exit search"))
+	} else {
+		lines = append(lines, dimStyle.Render("↑/↓: navigate  enter: select  s: search  esc: close"))
+	}
 
 	content := strings.Join(lines, "\n")
 	return popupStyle.Render(content)
@@ -1669,13 +1850,21 @@ func (m model) bottomLine() string {
 	switch m.currentScreen {
 	case screenLanding:
 		if m.showPairPopup {
-			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
+			if m.searchMode {
+				shortcuts = "↑/↓: navigate  enter: select  esc: exit search  q: quit"
+			} else {
+				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
+			}
 		} else {
 			shortcuts = "enter: ⏎  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
-			shortcuts = "↑/↓: navigate  enter: select  esc: close  q: quit"
+			if m.searchMode {
+				shortcuts = "↑/↓: navigate  enter: select  esc: exit search  q: quit"
+			} else {
+				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
+			}
 		} else {
 			shortcuts = "p: pairs  d: detail  q: quit"
 		}
