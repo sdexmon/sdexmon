@@ -929,7 +929,7 @@ func (m model) renderOrderbook() string {
 	padA := maxRows - nA
 	// build best-first slice and cumulative from best outward
 	asksBest := make([]hProtocol.PriceLevel, nA)
-	copy(asksBest, allAsks[:nA])
+	copy(asksBest, asks[:nA])
 	askCumBest := make([]float64, nA)
 	var sum float64
 	for i := 0; i < nA; i++ {
