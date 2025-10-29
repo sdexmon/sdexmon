@@ -9,6 +9,7 @@ Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Fea
 - Navigation-based routing with pair selection landing page
 - Polls Horizon for order books/trades; fetches LP metrics from stellar.expert
 - Defaults to curated asset pairs, 140×60 layout, and 2–7 decimal rendering
+- **Automatic version checking**: Checks for updates on startup and forces upgrade if required
 - **Note:** Maintenance UI has been removed - pairs are now managed via code
 
 Key files:
@@ -98,13 +99,18 @@ These environment variables are read at runtime:
 ## Architecture and data flow
 
 - Bubble Tea program in `main.go`
-  - **Routing**: State machine with 4 screens (Landing, Pair Info, Pair Debug, Pair Input)
-  - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, UI state
-  - **Init**: when base/quote are set, schedules three tickers (order book, trades, LP)
+  - **Routing**: State machine with 6 screens (Upgrade Required, Landing, Pair Info, Pair Debug, Pair Input, Maintenance)
+  - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, UI state, version info
+  - **Init**: 
+    - Checks GitHub API for latest release version
+    - If update required, forces Upgrade Required screen (blocks all navigation)
+    - When base/quote are set, schedules three tickers (order book, trades, LP)
   - **Update**: Screen-based navigation state machine
+    - Upgrade Required: Shows upgrade instructions, blocks all navigation including quit
     - Landing: Displays sdexmon ASCII art with version and commit info + pair selector popup
     - Pair screens: Horizon polling via `fetchOrderbookCmd`, `fetchTradesCmd`, `resolveAndFetchLPCmd`
   - **View**: Router switches on currentScreen to render appropriate view
+    - Upgrade Required: Centered red warning box with upgrade instructions
     - Landing: sdexmon ASCII branding with version display (top-left)
     - All other screens: SCAR AQUILA header, subtitle, content, context-aware footer
     - Pair Info: Three panels (Order Book, Trades, Liquidity Pool) + Exposure panels
@@ -217,19 +223,30 @@ Follows standard Go project layout:
 ```
 sdexmon/
 ├── cmd/sdexmon/              # Main application
-│   └── main.go               # Entry point (~2085 lines)
+│   ├── main.go               # Entry point (~2700 lines)
+│   └── maintenance_update.go # Maintenance mode handlers
 ├── internal/                 # Private packages
 │   ├── models/               # Data structures
 │   │   ├── types.go          # Model, ScreenState, Messages
-│   │   └── constants.go      # Curated assets, pairs, pool IDs
-│   └── config/               # Configuration
-│       ├── config.go         # Environment & logging
-│       └── assets.go         # Asset parsing utilities
+│   │   ├── constants.go      # Curated assets, pairs, pool IDs
+│   │   └── maintenance.go    # Maintenance mode types
+│   ├── config/               # Configuration
+│   │   ├── config.go         # Environment & logging
+│   │   ├── assets.go         # Asset parsing utilities
+│   │   └── user_config.go    # User configuration handling
+│   ├── ui/                   # UI components
+│   │   └── upgrade.go        # Upgrade required screen renderer
+│   ├── version/              # Version management
+│   │   ├── checker.go        # GitHub release checker
+│   │   └── checker_test.go   # Version comparison tests
+│   └── stellar/              # Stellar API helpers
+│       ├── confirmation.go   # Asset confirmation
+│       └── expert.go         # stellar.expert API client
 ├── go.mod                    # Module: github.com/sdexmon/sdexmon
 ├── go.sum                    # Dependencies
 ├── run                       # Launcher script
+├── install.sh                # Installation script
 ├── tui                       # Pre-compiled binary
-├── main_monolithic.go        # Backup of original single-file version
 └── WARP.md                   # This file
 ```
 

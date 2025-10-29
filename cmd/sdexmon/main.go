@@ -24,6 +24,8 @@ import (
 
 	"github.com/sdexmon/sdexmon/internal/config"
 	"github.com/sdexmon/sdexmon/internal/models"
+	"github.com/sdexmon/sdexmon/internal/ui"
+	"github.com/sdexmon/sdexmon/internal/version"
 )
 
 const (
@@ -38,10 +40,12 @@ const (
 type screenState int
 
 const (
-	screenLanding screenState = iota
+	screenUpgradeRequired screenState = iota
+	screenLanding
 	screenPairInfo
 	screenPairDebug
-	screenPairInput // custom pair input screen
+	screenPairInput    // custom pair input screen
+	screenMaintenance  // maintenance mode for managing pairs
 )
 
 const asciiAquila = `███████  ██████  █████  ██████       █████   ██████  ██    ██ ██ ██       █████  
@@ -176,6 +180,10 @@ type model struct {
 	// Screen state
 	currentScreen screenState
 
+	// Version check
+	updateRequired bool
+	latestVersion  string
+
 	// Asset selection
 	base          txnbuild.Asset
 	quote         txnbuild.Asset
@@ -294,13 +302,21 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Global quit
+		// Global quit (but block on upgrade screen)
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
+			if m.currentScreen == screenUpgradeRequired {
+				// Force upgrade - don't allow quit
+				return m, nil
+			}
 			return m, tea.Quit
 		}
 
 		// Screen-specific navigation
 		switch m.currentScreen {
+		case screenUpgradeRequired:
+			// Block all navigation on upgrade screen
+			return m, nil
+
 		case screenLanding:
 			// Handle popup pair selector if open from landing
 			if m.showPairPopup {
@@ -683,6 +699,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	switch m.currentScreen {
+	case screenUpgradeRequired:
+		return ui.RenderUpgradeRequired(appVersion, m.latestVersion, m.width, m.height)
 	case screenLanding:
 		return landingView(m)
 	case screenPairInput:
@@ -2635,6 +2653,14 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Check for updates before starting
+	fmt.Println("Checking for updates...")
+	updateRequired, latestVersion, _, err := version.CheckForUpdate(appVersion)
+	if err != nil {
+		log.Printf("Warning: Failed to check for updates: %v", err)
+		// Continue anyway - don't block startup on network issues
+	}
+
 	// Load configuration from YAML
 	if err := loadConfiguration(); err != nil {
 		log.Printf("Warning: Failed to load config: %v, using fallback data", err)
@@ -2660,7 +2686,14 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(initialModel(client, base, quote), tea.WithAltScreen())
+	m := initialModel(client, base, quote)
+	if updateRequired {
+		m.updateRequired = true
+		m.latestVersion = latestVersion
+		m.currentScreen = screenUpgradeRequired
+	}
+
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
 	}
