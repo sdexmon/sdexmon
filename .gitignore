@@ -39,3 +39,7 @@ tui
 main_monolithic.go
 CHANGES_SUMMARY.md
 dist/
+
+# Test files
+test_api.go
+test_api_simple.go
