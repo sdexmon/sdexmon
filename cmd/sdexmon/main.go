@@ -44,8 +44,7 @@ const (
 	screenLanding
 	screenPairInfo
 	screenPairDebug
-	screenPairInput    // custom pair input screen
-	screenMaintenance  // maintenance mode for managing pairs
+	screenPairInput // custom pair input screen
 )
 
 const asciiAquila = `███████  ██████  █████  ██████       █████   ██████  ██    ██ ██ ██       █████  
@@ -431,10 +430,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
-			case "m":
-				m.currentScreen = screenMaintenance
-				m.maintenanceState = initMaintenanceState()
-				return m, nil
 			}
 
 		case screenPairInput:
@@ -599,10 +594,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "d":
 				m.currentScreen = screenPairDebug
 				return m, nil
-			case "m":
-				m.currentScreen = screenMaintenance
-				m.maintenanceState = initMaintenanceState()
-				return m, nil
 			}
 
 		case screenPairDebug:
@@ -612,9 +603,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil
-
-		case screenMaintenance:
-			return handleMaintenanceUpdate(m, msg)
 		}
 
 	case tea.WindowSizeMsg:
@@ -686,10 +674,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg
 		return m, nil
-	
-	// Maintenance mode messages
-	case models.AssetSearchResultsMsg, models.ConfirmationDataMsg, models.MaintenanceErrMsg:
-		return handleMaintenanceUpdate(m, msg)
 	}
 
 	return m, nil
@@ -709,8 +693,6 @@ func (m model) View() string {
 		return pairInfoView(m)
 	case screenPairDebug:
 		return pairDebugView(m)
-	case screenMaintenance:
-		return maintenanceView(m)
 	default:
 		return landingView(m)
 	}
@@ -1971,7 +1953,7 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "enter: pairs  m: maintenance  q: quit"
+			shortcuts = "enter: pairs  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
@@ -1981,14 +1963,12 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "p: pairs  d: detail  m: maintenance  q: quit"
+			shortcuts = "p: pairs  d: detail  q: quit"
 		}
 	case screenPairDebug:
 		shortcuts = "d: back  q: quit"
 	case screenPairInput:
 		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
-	case screenMaintenance:
-		shortcuts = "esc: back  q: quit"
 	default:
 		shortcuts = "q: quit"
 	}
