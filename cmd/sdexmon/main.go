@@ -23,6 +23,7 @@ import (
 	"github.com/stellar/go/txnbuild"
 
 	"github.com/sdexmon/sdexmon/internal/config"
+	"github.com/sdexmon/sdexmon/internal/models"
 )
 
 const (
@@ -222,6 +223,9 @@ type model struct {
 	// debug modes
 	debugMode bool
 
+	// maintenance mode
+	maintenanceState models.MaintenanceState
+
 	status string
 	err    error
 }
@@ -257,22 +261,23 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 	initialScreen := screenLanding
 
 	return model{
-		client:        client,
-		currentScreen: initialScreen,
-		base:          base,
-		quote:         quote,
-		trades:        make([]hProtocol.Trade, 0, 64),
-		baseInput:     b,
-		quoteInput:    q,
-		searchInput:   s,
-		searchMode:    false,
-		filteredPairs: configuredPairs,
-		debugMode:     debugMode,
-		debugLogs:     make([]string, 0, 100),
-		exposurePools: make([]Liquidity, 0),
-		showPairPopup: false, // Start on landing page, open popup on enter
-		pairIndex:     currentPairIndex(base, quote),
-		status:        "Select pair to begin",
+		client:           client,
+		currentScreen:    initialScreen,
+		base:             base,
+		quote:            quote,
+		trades:           make([]hProtocol.Trade, 0, 64),
+		baseInput:        b,
+		quoteInput:       q,
+		searchInput:      s,
+		searchMode:       false,
+		filteredPairs:    configuredPairs,
+		debugMode:        debugMode,
+		debugLogs:        make([]string, 0, 100),
+		exposurePools:    make([]Liquidity, 0),
+		showPairPopup:    false, // Start on landing page, open popup on enter
+		pairIndex:        currentPairIndex(base, quote),
+		maintenanceState: initMaintenanceState(),
+		status:           "Select pair to begin",
 	}
 }
 
@@ -409,6 +414,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
+				return m, nil
+			case "m":
+				m.currentScreen = screenMaintenance
+				m.maintenanceState = initMaintenanceState()
 				return m, nil
 			}
 
@@ -571,18 +580,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
-		case "d":
-			m.currentScreen = screenPairDebug
-			return m, nil
-		}
+			case "d":
+				m.currentScreen = screenPairDebug
+				return m, nil
+			case "m":
+				m.currentScreen = screenMaintenance
+				m.maintenanceState = initMaintenanceState()
+				return m, nil
+			}
 
-	case screenPairDebug:
-		switch msg.String() {
-		case "d":
-			m.currentScreen = screenPairInfo
+		case screenPairDebug:
+			switch msg.String() {
+			case "d":
+				m.currentScreen = screenPairInfo
+				return m, nil
+			}
 			return m, nil
-		}
 
+		case screenMaintenance:
+			return handleMaintenanceUpdate(m, msg)
 		}
 
 	case tea.WindowSizeMsg:
@@ -654,6 +670,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg
 		return m, nil
+	
+	// Maintenance mode messages
+	case models.AssetSearchResultsMsg, models.ConfirmationDataMsg, models.MaintenanceErrMsg:
+		return handleMaintenanceUpdate(m, msg)
 	}
 
 	return m, nil
@@ -671,6 +691,8 @@ func (m model) View() string {
 		return pairInfoView(m)
 	case screenPairDebug:
 		return pairDebugView(m)
+	case screenMaintenance:
+		return maintenanceView(m)
 	default:
 		return landingView(m)
 	}
@@ -1856,7 +1878,7 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "enter: ⏎  q: quit"
+			shortcuts = "enter: pairs  m: maintenance  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
@@ -1866,12 +1888,14 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "p: pairs  d: detail  q: quit"
+			shortcuts = "p: pairs  d: detail  m: maintenance  q: quit"
 		}
 	case screenPairDebug:
 		shortcuts = "d: back  q: quit"
 	case screenPairInput:
 		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
+	case screenMaintenance:
+		shortcuts = "esc: back  q: quit"
 	default:
 		shortcuts = "q: quit"
 	}
