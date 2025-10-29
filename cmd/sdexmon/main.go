@@ -1320,14 +1320,89 @@ func fetchOrderbookCmd(client *horizonclient.Client, base, quote txnbuild.Asset)
 		if client == nil || base == nil || quote == nil {
 			return errMsg(fmt.Errorf("not configured"))
 		}
-		req := horizonclient.OrderBookRequest{}
-		applySellingAsset(&req, base)
-		applyBuyingAsset(&req, quote)
-		ob, err := client.OrderBook(req)
+		
+		// Query order book in canonical direction (base -> quote)
+		reqDirect := horizonclient.OrderBookRequest{}
+		applySellingAsset(&reqDirect, base)
+		applyBuyingAsset(&reqDirect, quote)
+		obDirect, err := client.OrderBook(reqDirect)
 		if err != nil {
 			return errMsg(err)
 		}
-		return orderbookDataMsg{ob: ob}
+		
+		// Query order book in reverse direction (quote -> base)
+		reqReverse := horizonclient.OrderBookRequest{}
+		applySellingAsset(&reqReverse, quote)
+		applyBuyingAsset(&reqReverse, base)
+		obReverse, err := client.OrderBook(reqReverse)
+		if err != nil {
+			return errMsg(err)
+		}
+		
+		// Merge the order books:
+		// - Direct asks stay as asks (selling base for quote)
+		// - Reverse bids become bids (selling quote for base = buying base with quote)
+		// - Direct bids stay as bids (buying base with quote)
+		// - Reverse asks become asks (buying quote with base = selling base for quote)
+		
+		merged := hProtocol.OrderBookSummary{
+			Bids:    make([]hProtocol.PriceLevel, 0),
+			Asks:    make([]hProtocol.PriceLevel, 0),
+			Selling: obDirect.Selling,
+			Buying:  obDirect.Buying,
+		}
+		
+		// Add direct asks (people selling base for quote)
+		merged.Asks = append(merged.Asks, obDirect.Asks...)
+		
+		// Add direct bids (people buying base with quote)
+		merged.Bids = append(merged.Bids, obDirect.Bids...)
+		
+		// Convert reverse bids to our asks
+		// Reverse bid: selling quote for base (price in base/quote)
+		// We need: selling base for quote (price in quote/base = 1/price)
+		for _, bid := range obReverse.Bids {
+			price, err := strconv.ParseFloat(bid.Price, 64)
+			if err != nil || price == 0 {
+				continue
+			}
+			// Invert the price: if reverse bid is X base/quote, we want 1/X quote/base
+			invertedPrice := 1.0 / price
+			// Amount needs to be converted too: reverse bid amount is in quote, we need base
+			amount, err := strconv.ParseFloat(bid.Amount, 64)
+			if err != nil {
+				continue
+			}
+			convertedAmount := amount * price // quote * (base/quote) = base
+			
+			merged.Asks = append(merged.Asks, hProtocol.PriceLevel{
+				Price:  fmt.Sprintf("%.7f", invertedPrice),
+				Amount: fmt.Sprintf("%.7f", convertedAmount),
+			})
+		}
+		
+		// Convert reverse asks to our bids
+		// Reverse ask: buying quote with base (price in base/quote)
+		// We need: buying base with quote (price in quote/base = 1/price)
+		for _, ask := range obReverse.Asks {
+			price, err := strconv.ParseFloat(ask.Price, 64)
+			if err != nil || price == 0 {
+				continue
+			}
+			invertedPrice := 1.0 / price
+			amount, err := strconv.ParseFloat(ask.Amount, 64)
+			if err != nil {
+				continue
+			}
+			convertedAmount := amount * price
+			
+			merged.Bids = append(merged.Bids, hProtocol.PriceLevel{
+				Price:  fmt.Sprintf("%.7f", invertedPrice),
+				Amount: fmt.Sprintf("%.7f", convertedAmount),
+			})
+		}
+		
+		return orderbookDataMsg{ob: merged}
 	}
 }
 
