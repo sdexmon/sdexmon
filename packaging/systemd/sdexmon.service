@@ -1,0 +1,28 @@
+[Unit]
+Description=SDEXMON passive display board
+Documentation=https://github.com/sdexmon/sdexmon
+Wants=network-online.target
+After=network-online.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=sdexmon
+Environment=HOME=/var/lib/sdexmon
+Environment=TERM=xterm-256color
+ExecStart=/usr/local/bin/sdexmon display --favorites-only --rotate=30s --no-update-check
+Restart=always
+RestartSec=5
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

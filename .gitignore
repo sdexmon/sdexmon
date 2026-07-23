@@ -32,7 +32,7 @@ go.work.sum
 # .vscode/
 
 # Application binaries
-sdexmon
+/sdexmon
 tui
 
 # Development artifacts
