@@ -12,6 +12,7 @@ NC='\033[0m' # No Color
 REPO="sdexmon/sdexmon"
 BINARY_NAME="sdexmon"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+SUDO=()
 
 # Functions
 log_info() {
@@ -24,6 +25,20 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+prepare_install_dir() {
+    if [ -d "$INSTALL_DIR" ]; then
+        if [ ! -w "$INSTALL_DIR" ]; then
+            SUDO=(sudo)
+        fi
+        return
+    fi
+
+    if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+        SUDO=(sudo)
+        "${SUDO[@]}" mkdir -p "$INSTALL_DIR"
+    fi
 }
 
 # Detect OS and architecture
@@ -70,7 +85,7 @@ create_wrapper() {
     
     # Remove existing files if they exist (clean install)
     if [ -f "$wrapper_path" ]; then
-        sudo rm -f "$wrapper_path"
+        "${SUDO[@]}" rm -f "$wrapper_path"
     fi
     
     # Create wrapper with proper environment in temp location
@@ -80,29 +95,23 @@ set -euo pipefail
 
 # Safe defaults for running sdexmon
 export HORIZON_URL="${HORIZON_URL:-https://horizon.stellar.org}"
-export DEBUG="${DEBUG:-true}"
+export DEBUG="${DEBUG:-false}"
 
 # Set terminal window title
 printf '\033]0;sdexmon\007'
-
-# Set fixed terminal size (140 columns x 60 rows)
-if command -v tput >/dev/null 2>&1; then
-  printf '\e[8;60;140t'
-fi
 
 # Run the actual binary
 exec "$(dirname "$0")/.sdexmon-bin" "$@"
 EOF
     
-    # Install wrapper using sudo
-    if ! sudo cp "$temp_wrapper" "$wrapper_path"; then
+    if ! "${SUDO[@]}" cp "$temp_wrapper" "$wrapper_path"; then
         log_error "Failed to install wrapper script"
         rm -f "$temp_wrapper"
         return 1
     fi
     
     rm -f "$temp_wrapper"
-    sudo chmod 755 "$wrapper_path"
+    "${SUDO[@]}" chmod 755 "$wrapper_path"
     log_info "✅ Wrapper script created"
 }
 
@@ -120,6 +129,37 @@ install_binary() {
         rm -rf "$temp_dir"
         exit 1
     fi
+
+    local checksum_url="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
+    if ! curl -fsSL -o "${temp_dir}/checksums.txt" "$checksum_url"; then
+        log_error "Failed to download release checksums"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+
+    log_info "Verifying checksum..."
+    local expected
+    expected=$(awk -v file="$archive" '$2 == file {print $1}' "${temp_dir}/checksums.txt")
+    if [ -z "$expected" ]; then
+        log_error "Release checksum not found for $archive"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+    local actual
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "${temp_dir}/${archive}" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "${temp_dir}/${archive}" | awk '{print $1}')
+    else
+        log_error "sha256sum or shasum is required to verify the release"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+        log_error "Checksum verification failed"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
     
     log_info "Extracting archive..."
     if ! tar -xzf "${temp_dir}/${archive}" -C "$temp_dir"; then
@@ -128,22 +168,18 @@ install_binary() {
         exit 1
     fi
     
-    # Create install directory if it doesn't exist
-    if [ ! -d "$INSTALL_DIR" ]; then
-        log_warn "Install directory $INSTALL_DIR doesn't exist. Creating..."
-        sudo mkdir -p "$INSTALL_DIR"
-    fi
+    prepare_install_dir
     
     # Install binary with hidden name (wrapper will call it)
     log_info "Installing to $INSTALL_DIR..."
-    if ! sudo cp "${temp_dir}/${BINARY_NAME}" "$INSTALL_DIR/.${BINARY_NAME}-bin"; then
+    if ! "${SUDO[@]}" cp "${temp_dir}/${BINARY_NAME}" "$INSTALL_DIR/.${BINARY_NAME}-bin"; then
         log_error "Failed to install binary. Do you have permission to write to $INSTALL_DIR?"
         rm -rf "$temp_dir"
         exit 1
     fi
     
     # Make executable
-    sudo chmod 755 "$INSTALL_DIR/.${BINARY_NAME}-bin"
+    "${SUDO[@]}" chmod 755 "$INSTALL_DIR/.${BINARY_NAME}-bin"
     
     # Create wrapper script
     create_wrapper

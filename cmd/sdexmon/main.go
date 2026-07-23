@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -71,7 +72,24 @@ var gitCommit = "unknown"
 
 // Curated assets and pairs (static table)
 
-type pairOption struct{ Base, Quote string }
+type pairOption struct {
+	Label      string
+	Base       string
+	Quote      string
+	BaseAsset  txnbuild.Asset
+	QuoteAsset txnbuild.Asset
+	Favorite   bool
+}
+
+type runtimeOptions struct {
+	DisplayMode   bool
+	FavoritesOnly bool
+	NoUpdateCheck bool
+	Pair          string
+	Rotate        time.Duration
+}
+
+var options runtimeOptions
 
 var curatedAssets = map[string]txnbuild.Asset{
 	"USDZ": txnbuild.CreditAsset{Code: "USDZ", Issuer: "GAKTLPC4ZV37SSCITQ5IS5AQ4WPF4CF4VZJQPPAROSGXMYOATF5U6XPR"},
@@ -84,23 +102,23 @@ var curatedAssets = map[string]txnbuild.Asset{
 }
 
 var curatedPairs = []pairOption{
-	{"USDC", "USDZ"},
-	{"USDZ", "ZARZ"},
-	{"USDZ", "EURZ"},
-	{"USDZ", "BTCZ"},
-	{"USDZ", "XAUZ"},
-	{"EURZ", "ZARZ"},
-	{"EURZ", "XAUZ"},
-	{"EURZ", "BTCZ"},
-	{"ZARZ", "XAUZ"},
-	{"ZARZ", "BTCZ"},
-	{"XAUZ", "BTCZ"},
-	{"XLM", "USDC"},
-	{"XLM", "USDZ"},
-	{"XLM", "EURZ"},
-	{"XLM", "ZARZ"},
-	{"XLM", "XAUZ"},
-	{"XLM", "BTCZ"},
+	{Base: "USDC", Quote: "USDZ", Favorite: true},
+	{Base: "USDZ", Quote: "ZARZ", Favorite: true},
+	{Base: "USDZ", Quote: "EURZ", Favorite: true},
+	{Base: "USDZ", Quote: "BTCZ"},
+	{Base: "USDZ", Quote: "XAUZ"},
+	{Base: "EURZ", Quote: "ZARZ"},
+	{Base: "EURZ", Quote: "XAUZ"},
+	{Base: "EURZ", Quote: "BTCZ"},
+	{Base: "ZARZ", Quote: "XAUZ"},
+	{Base: "ZARZ", Quote: "BTCZ"},
+	{Base: "XAUZ", Quote: "BTCZ"},
+	{Base: "XLM", Quote: "USDC", Favorite: true},
+	{Base: "XLM", Quote: "USDZ"},
+	{Base: "XLM", Quote: "EURZ"},
+	{Base: "XLM", Quote: "ZARZ"},
+	{Base: "XLM", Quote: "XAUZ"},
+	{Base: "XLM", Quote: "BTCZ"},
 }
 
 // Global configuration loaded from YAML
@@ -153,6 +171,7 @@ type (
 	tradesTickMsg        struct{}
 	lpTickMsg            struct{}
 	networkTickMsg       struct{}
+	pairRotateMsg        struct{}
 	orderbookDataMsg     struct{ ob hProtocol.OrderBookSummary }
 	tradesDataMsg        struct{ list []hProtocol.Trade }
 	lpDataMsg            struct{ data Liquidity }
@@ -208,15 +227,14 @@ type model struct {
 	height int
 
 	// input and selection state
-	pairIndex      int
-	assetIndex     int
-	baseInput      textinput.Model
-	quoteInput     textinput.Model
-	showPairPopup  bool // shows pair selector popup overlay
-	searchInput    textinput.Model // search input for pair selector
-	searchMode     bool // whether search is active in pair selector
-	filteredPairs  []pairOption // filtered list based on search
-
+	pairIndex     int
+	assetIndex    int
+	baseInput     textinput.Model
+	quoteInput    textinput.Model
+	showPairPopup bool            // shows pair selector popup overlay
+	searchInput   textinput.Model // search input for pair selector
+	searchMode    bool            // whether search is active in pair selector
+	filteredPairs []pairOption    // filtered list based on search
 
 	// liveness
 	lastOrderbookAt time.Time
@@ -228,7 +246,10 @@ type model struct {
 	lastNetworkAt   time.Time
 
 	// debug modes
-	debugMode bool
+	debugMode      bool
+	displayMode    bool
+	rotateInterval time.Duration
+	favoritesOnly  bool
 
 	// maintenance mode
 	maintenanceState models.MaintenanceState
@@ -253,7 +274,6 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 	s.Prompt = "🔍 "
 	s.CharLimit = 40
 
-
 	// Check for debug mode
 	debugMode := os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1"
 
@@ -262,10 +282,10 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		setupDebugLogger()
 	}
 
-	// Always start at Landing screen
-	// Environment variables BASE_ASSET/QUOTE_ASSET are stored as defaults
-	// but don't skip the landing page
 	initialScreen := screenLanding
+	if options.DisplayMode && base != nil && quote != nil {
+		initialScreen = screenPairInfo
+	}
 
 	return model{
 		client:           client,
@@ -279,6 +299,9 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		searchMode:       false,
 		filteredPairs:    configuredPairs,
 		debugMode:        debugMode,
+		displayMode:      options.DisplayMode,
+		rotateInterval:   options.Rotate,
+		favoritesOnly:    options.FavoritesOnly,
 		debugLogs:        make([]string, 0, 100),
 		exposurePools:    make([]Liquidity, 0),
 		showPairPopup:    false, // Start on landing page, open popup on enter
@@ -289,11 +312,19 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 }
 
 func (m model) Init() tea.Cmd {
-	// Start network capacity polling immediately
-	return tea.Batch(
+	commands := []tea.Cmd{
 		fetchNetworkStatsCmd(m.client),
 		tea.Tick(networkInterval, func(time.Time) tea.Msg { return networkTickMsg{} }),
-	)
+	}
+	if m.displayMode && m.base != nil && m.quote != nil {
+		commands = append(commands, refreshPairCmds(m)...)
+		if m.rotateInterval > 0 {
+			commands = append(commands, tea.Tick(m.rotateInterval, func(time.Time) tea.Msg {
+				return pairRotateMsg{}
+			}))
+		}
+	}
+	return tea.Batch(commands...)
 }
 
 // Update
@@ -334,9 +365,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Select current filtered pair
 						if len(m.filteredPairs) > 0 && m.pairIndex < len(m.filteredPairs) {
 							opt := m.filteredPairs[m.pairIndex]
-							base, ok1 := curatedAssets[opt.Base]
-							quote, ok2 := curatedAssets[opt.Quote]
-							if ok1 && ok2 {
+							base, quote, ok := assetsForPair(opt)
+							if ok {
 								m.base, m.quote = base, quote
 								m.tradeCursor = ""
 								m.showPairPopup = false
@@ -393,16 +423,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				case "down", "j":
-				if m.pairIndex < len(configuredPairs)-1 {
+					if m.pairIndex < len(configuredPairs)-1 {
 						m.pairIndex++
 					}
 					return m, nil
 				case "enter":
-				if len(configuredPairs) > 0 {
-					opt := configuredPairs[m.pairIndex]
-						base, ok1 := curatedAssets[opt.Base]
-						quote, ok2 := curatedAssets[opt.Quote]
-						if ok1 && ok2 {
+					if len(configuredPairs) > 0 {
+						opt := configuredPairs[m.pairIndex]
+						base, quote, ok := assetsForPair(opt)
+						if ok {
 							m.base, m.quote = base, quote
 							m.tradeCursor = ""
 							m.showPairPopup = false
@@ -496,9 +525,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Select current filtered pair
 						if len(m.filteredPairs) > 0 && m.pairIndex < len(m.filteredPairs) {
 							opt := m.filteredPairs[m.pairIndex]
-							base, ok1 := curatedAssets[opt.Base]
-							quote, ok2 := curatedAssets[opt.Quote]
-							if ok1 && ok2 {
+							base, quote, ok := assetsForPair(opt)
+							if ok {
 								m.base, m.quote = base, quote
 								m.tradeCursor = ""
 								m.showPairPopup = false
@@ -554,16 +582,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				case "down", "j":
-				if m.pairIndex < len(configuredPairs)-1 {
+					if m.pairIndex < len(configuredPairs)-1 {
 						m.pairIndex++
 					}
 					return m, nil
 				case "enter":
-				if len(configuredPairs) > 0 {
-					opt := configuredPairs[m.pairIndex]
-						base, ok1 := curatedAssets[opt.Base]
-						quote, ok2 := curatedAssets[opt.Quote]
-						if ok1 && ok2 {
+					if len(configuredPairs) > 0 {
+						opt := configuredPairs[m.pairIndex]
+						base, quote, ok := assetsForPair(opt)
+						if ok {
 							m.base, m.quote = base, quote
 							m.tradeCursor = ""
 							m.showPairPopup = false
@@ -630,6 +657,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fetchNetworkStatsCmd(m.client),
 			tea.Tick(networkInterval, func(time.Time) tea.Msg { return networkTickMsg{} }),
 		)
+	case pairRotateMsg:
+		pairs := displayPairs(m.favoritesOnly)
+		if len(pairs) == 0 {
+			return m, nil
+		}
+		next := 0
+		for i, pair := range pairs {
+			if pairMatchesAssets(pair, m.base, m.quote) {
+				next = (i + 1) % len(pairs)
+				break
+			}
+		}
+		base, quote, ok := assetsForPair(pairs[next])
+		if !ok {
+			return m, tea.Tick(m.rotateInterval, func(time.Time) tea.Msg { return pairRotateMsg{} })
+		}
+		m.base, m.quote = base, quote
+		m.tradeCursor = ""
+		m.trades = nil
+		m.status = "display rotation"
+		commands := fetchPairDataCmds(m)
+		commands = append(commands, tea.Tick(m.rotateInterval, func(time.Time) tea.Msg {
+			return pairRotateMsg{}
+		}))
+		return m, tea.Batch(commands...)
 
 	case orderbookDataMsg:
 		m.orderbook = msg.ob
@@ -710,7 +762,8 @@ func (m *model) filterPairs() {
 	filtered := []pairOption{}
 	for _, p := range configuredPairs {
 		// Search matches if query is in either base or quote asset
-		if strings.Contains(p.Base, query) || strings.Contains(p.Quote, query) {
+		if strings.Contains(strings.ToUpper(pairLabel(p)), query) ||
+			strings.Contains(p.Base, query) || strings.Contains(p.Quote, query) {
 			filtered = append(filtered, p)
 		}
 	}
@@ -759,7 +812,7 @@ func pairSelectorPopup(m model) string {
 	} else {
 		for i := start; i < end; i++ {
 			p := pairsList[i]
-			label := fmt.Sprintf("%s/%s", p.Base, p.Quote)
+			label := pairLabel(p)
 			if i == m.pairIndex {
 				lines = append(lines, selectedStyle.Render("> "+label))
 			} else {
@@ -797,15 +850,30 @@ func pairInfoView(m model) string {
 	// Row 1: ORDER BOOK (left) and TRADES (right)
 	// Row 2: LIQUIDITY POOL (full width)
 	// Row 3: EXPOSURE BASE (left) and EXPOSURE QUOTE (right)
-	leftW := 66
-	rightW := 44
+	contentWidth := 112
+	if m.width > 0 {
+		contentWidth = m.width - 4
+	}
+	if contentWidth < 72 {
+		contentWidth = 72
+	}
+	if contentWidth > 180 {
+		contentWidth = 180
+	}
+	leftW := contentWidth * 3 / 5
+	rightW := contentWidth - leftW - 1
 
 	leftTop := panelStyle.Width(leftW).Render(ob)
 	rightTop := panelStyle.Width(rightW).Render(tr)
 	row1 := lipgloss.JoinHorizontal(lipgloss.Left, leftTop, " ", rightTop)
+	if contentWidth < 100 {
+		leftTop = panelStyle.Width(contentWidth).Render(ob)
+		rightTop = panelStyle.Width(contentWidth).Render(tr)
+		row1 = lipgloss.JoinVertical(lipgloss.Left, leftTop, rightTop)
+	}
 
 	// Full width panel
-	lpW := leftW + rightW + 1 // Combined width + spacer
+	lpW := contentWidth
 	row2 := panelStyle.Width(lpW).Render(lp)
 
 	// Exposure panels - equal width split
@@ -813,6 +881,11 @@ func pairInfoView(m model) string {
 	expBasePanel := panelStyle.Width(expW).Render(baseExp)
 	expQuotePanel := panelStyle.Width(expW).Render(quoteExp)
 	row3 := lipgloss.JoinHorizontal(lipgloss.Left, expBasePanel, " ", expQuotePanel)
+	if contentWidth < 100 {
+		expBasePanel = panelStyle.Width(contentWidth).Render(baseExp)
+		expQuotePanel = panelStyle.Width(contentWidth).Render(quoteExp)
+		row3 = lipgloss.JoinVertical(lipgloss.Left, expBasePanel, expQuotePanel)
+	}
 
 	bottom := m.bottomLine()
 
@@ -880,7 +953,7 @@ func (m model) renderOrderbook() string {
 	allAsks := m.orderbook.Asks
 
 	// Get decimal configuration for current pair
-	baseDecimals := 2 // default
+	baseDecimals := 2  // default
 	quoteDecimals := 2 // default
 	if appConfig != nil && m.base != nil && m.quote != nil {
 		baseName := getAssetName(m.base)
@@ -1035,8 +1108,8 @@ func filterOutlierBids(bids []hProtocol.PriceLevel) []hProtocol.PriceLevel {
 	}
 
 	// Filter out bids that are <10% or >1000% of the best bid
-	minBidPrice := bestBidPrice * 0.10  // 10% minimum
-	maxBidPrice := bestBidPrice * 10.0   // 1000% maximum
+	minBidPrice := bestBidPrice * 0.10 // 10% minimum
+	maxBidPrice := bestBidPrice * 10.0 // 1000% maximum
 	filtered := make([]hProtocol.PriceLevel, 0, len(bids))
 
 	for _, bid := range bids {
@@ -1246,7 +1319,7 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 
 func (m model) renderTrades() string {
 	// Get decimal configuration for current pair
-	baseDecimals := 2 // default
+	baseDecimals := 2  // default
 	quoteDecimals := 2 // default
 	if appConfig != nil && m.base != nil && m.quote != nil {
 		baseName := getAssetName(m.base)
@@ -1262,14 +1335,14 @@ func (m model) renderTrades() string {
 	for i := len(m.trades) - 1; i >= 0 && count < limit; i-- {
 		t := m.trades[i]
 		isSell := t.BaseIsSeller
-		
+
 		// Format price with quote decimals
 		priceFloat := float64(t.Price.N) / float64(t.Price.D)
 		price := formatAmountWithDecimals(fmt.Sprintf("%.7f", priceFloat), quoteDecimals, 12)
-		
+
 		// Format amount with base decimals
 		amount := formatAmountWithDecimals(t.BaseAmount, baseDecimals, 12)
-		
+
 		elapsed := humanElapsedShort(now.Sub(time.Time(t.LedgerCloseTime)))
 		line := fmt.Sprintf("%s  %s  %s", padLeftVis(elapsed, 8), price, amount)
 		if isSell {
@@ -1302,89 +1375,19 @@ func fetchOrderbookCmd(client *horizonclient.Client, base, quote txnbuild.Asset)
 		if client == nil || base == nil || quote == nil {
 			return errMsg(fmt.Errorf("not configured"))
 		}
-		
-		// Query order book in canonical direction (base -> quote)
-		reqDirect := horizonclient.OrderBookRequest{}
-		applySellingAsset(&reqDirect, base)
-		applyBuyingAsset(&reqDirect, quote)
-		obDirect, err := client.OrderBook(reqDirect)
+
+		// Horizon returns both bids and asks for a canonical base/counter pair.
+		// A second reverse-direction request represents the same underlying
+		// offers and must not be merged into this response.
+		req := horizonclient.OrderBookRequest{}
+		applySellingAsset(&req, base)
+		applyBuyingAsset(&req, quote)
+		req.Limit = 200
+		ob, err := client.OrderBook(req)
 		if err != nil {
 			return errMsg(err)
 		}
-		
-		// Query order book in reverse direction (quote -> base)
-		reqReverse := horizonclient.OrderBookRequest{}
-		applySellingAsset(&reqReverse, quote)
-		applyBuyingAsset(&reqReverse, base)
-		obReverse, err := client.OrderBook(reqReverse)
-		if err != nil {
-			return errMsg(err)
-		}
-		
-		// Merge the order books:
-		// - Direct asks stay as asks (selling base for quote)
-		// - Reverse bids become bids (selling quote for base = buying base with quote)
-		// - Direct bids stay as bids (buying base with quote)
-		// - Reverse asks become asks (buying quote with base = selling base for quote)
-		
-		merged := hProtocol.OrderBookSummary{
-			Bids:    make([]hProtocol.PriceLevel, 0),
-			Asks:    make([]hProtocol.PriceLevel, 0),
-			Selling: obDirect.Selling,
-			Buying:  obDirect.Buying,
-		}
-		
-		// Add direct asks (people selling base for quote)
-		merged.Asks = append(merged.Asks, obDirect.Asks...)
-		
-		// Add direct bids (people buying base with quote)
-		merged.Bids = append(merged.Bids, obDirect.Bids...)
-		
-		// Convert reverse bids to our asks
-		// Reverse bid: selling quote for base (price in base/quote)
-		// We need: selling base for quote (price in quote/base = 1/price)
-		for _, bid := range obReverse.Bids {
-			price, err := strconv.ParseFloat(bid.Price, 64)
-			if err != nil || price == 0 {
-				continue
-			}
-			// Invert the price: if reverse bid is X base/quote, we want 1/X quote/base
-			invertedPrice := 1.0 / price
-			// Amount needs to be converted too: reverse bid amount is in quote, we need base
-			amount, err := strconv.ParseFloat(bid.Amount, 64)
-			if err != nil {
-				continue
-			}
-			convertedAmount := amount * price // quote * (base/quote) = base
-			
-			merged.Asks = append(merged.Asks, hProtocol.PriceLevel{
-				Price:  fmt.Sprintf("%.7f", invertedPrice),
-				Amount: fmt.Sprintf("%.7f", convertedAmount),
-			})
-		}
-		
-		// Convert reverse asks to our bids
-		// Reverse ask: buying quote with base (price in base/quote)
-		// We need: buying base with quote (price in quote/base = 1/price)
-		for _, ask := range obReverse.Asks {
-			price, err := strconv.ParseFloat(ask.Price, 64)
-			if err != nil || price == 0 {
-				continue
-			}
-			invertedPrice := 1.0 / price
-			amount, err := strconv.ParseFloat(ask.Amount, 64)
-			if err != nil {
-				continue
-			}
-			convertedAmount := amount * price
-			
-			merged.Bids = append(merged.Bids, hProtocol.PriceLevel{
-				Price:  fmt.Sprintf("%.7f", invertedPrice),
-				Amount: fmt.Sprintf("%.7f", convertedAmount),
-			})
-		}
-		
-		return orderbookDataMsg{ob: merged}
+		return orderbookDataMsg{ob: ob}
 	}
 }
 
@@ -1526,11 +1529,86 @@ func applyCounterAsset(req *horizonclient.TradeRequest, a txnbuild.Asset) {
 	}
 }
 
+func assetsForPair(pair pairOption) (txnbuild.Asset, txnbuild.Asset, bool) {
+	base := pair.BaseAsset
+	if base == nil {
+		base = curatedAssets[pair.Base]
+	}
+	quote := pair.QuoteAsset
+	if quote == nil {
+		quote = curatedAssets[pair.Quote]
+	}
+	return base, quote, base != nil && quote != nil
+}
+
+func pairMatchesAssets(pair pairOption, base, quote txnbuild.Asset) bool {
+	pairBase, pairQuote, ok := assetsForPair(pair)
+	if !ok || base == nil || quote == nil {
+		return false
+	}
+	return assetString(pairBase) == assetString(base) && assetString(pairQuote) == assetString(quote)
+}
+
+func poolMapKey(base, quote txnbuild.Asset) string {
+	return assetString(base) + "|" + assetString(quote)
+}
+
+func displayPairs(favoritesOnly bool) []pairOption {
+	if !favoritesOnly {
+		return configuredPairs
+	}
+	favorites := make([]pairOption, 0, len(configuredPairs))
+	for _, pair := range configuredPairs {
+		if pair.Favorite {
+			favorites = append(favorites, pair)
+		}
+	}
+	if len(favorites) == 0 {
+		return configuredPairs
+	}
+	return favorites
+}
+
+func findConfiguredPair(label string, pairs []pairOption) (pairOption, bool) {
+	label = strings.TrimSpace(label)
+	for _, pair := range pairs {
+		if strings.EqualFold(label, pairLabel(pair)) ||
+			strings.EqualFold(label, pair.Base+"/"+pair.Quote) {
+			return pair, true
+		}
+	}
+	return pairOption{}, false
+}
+
+func pairLabel(pair pairOption) string {
+	if strings.TrimSpace(pair.Label) != "" {
+		return pair.Label
+	}
+	return pair.Base + "/" + pair.Quote
+}
+
+func refreshPairCmds(m model) []tea.Cmd {
+	commands := fetchPairDataCmds(m)
+	return append(commands,
+		tea.Tick(orderbookInterval, func(time.Time) tea.Msg { return orderbookTickMsg{} }),
+		tea.Tick(tradesInterval, func(time.Time) tea.Msg { return tradesTickMsg{} }),
+		tea.Tick(lpInterval, func(time.Time) tea.Msg { return lpTickMsg{} }),
+	)
+}
+
+func fetchPairDataCmds(m model) []tea.Cmd {
+	return []tea.Cmd{
+		fetchOrderbookCmd(m.client, m.base, m.quote),
+		fetchTradesCmd(m.client, m.base, m.quote, m.tradeCursor, true),
+		resolveAndFetchLPCmd(m.client, m.base, m.quote),
+		fetchBaseExposureCmd(m.client, m.base),
+		fetchQuoteExposureCmd(m.client, m.quote),
+	}
+}
+
 func currentPairIndex(base, quote txnbuild.Asset) int {
-	bc := assetShort(base)
-	qc := assetShort(quote)
 	for i, p := range configuredPairs {
-		if p.Base == bc && p.Quote == qc {
+		if pairMatchesAssets(p, base, quote) {
 			return i
 		}
 	}
@@ -1551,7 +1629,7 @@ func loadConfiguration() error {
 	// Convert YAML pairs to internal pairOption format
 	configuredPairs = make([]pairOption, 0, len(appConfig.Pairs))
 	liquidityPoolIDs = make(map[string]string)
-	
+
 	for _, pair := range appConfig.Pairs {
 		// Parse base and quote assets from YAML format
 		base, err := config.ParseAsset(pair.Base)
@@ -1564,51 +1642,56 @@ func loadConfiguration() error {
 			log.Printf("Warning: Invalid quote asset in config pair %s: %v", pair.Name, err)
 			continue
 		}
-		
+
 		// Add to configured pairs
 		configuredPairs = append(configuredPairs, pairOption{
-			Base:  assetShort(base),
-			Quote: assetShort(quote),
+			Label:      pair.Name,
+			Base:       assetShort(base),
+			Quote:      assetShort(quote),
+			BaseAsset:  base,
+			QuoteAsset: quote,
+			Favorite:   pair.Favorite,
 		})
-		
+
 		// Add LP mapping if present
 		if pair.LP != "" {
 			baseCode := assetShort(base)
 			quoteCode := assetShort(quote)
 			pairKey := baseCode + "-" + quoteCode
 			reversePairKey := quoteCode + "-" + baseCode
-			
+
 			liquidityPoolIDs[pairKey] = pair.LP
 			liquidityPoolIDs[reversePairKey] = pair.LP
+			liquidityPoolIDs[poolMapKey(base, quote)] = pair.LP
+			liquidityPoolIDs[poolMapKey(quote, base)] = pair.LP
 		}
 	}
-	
+
 	// Add fallback pairs if no configured pairs loaded
 	if len(configuredPairs) == 0 {
 		configuredPairs = curatedPairs
 	}
-	
+
 	// Add fallback LP IDs for any missing ones
 	for key, poolID := range fallbackLiquidityPoolIDs {
 		if liquidityPoolIDs[key] == "" {
 			liquidityPoolIDs[key] = poolID
 		}
 	}
-	
+
 	return nil
 }
-
 
 // formatAssetForYAML converts asset code and issuer to YAML format
 // formatAssetForYAML converts asset code and issuer to YAML format
 func formatAssetForYAML(code, issuer string) string {
 	code = strings.TrimSpace(code)
 	issuer = strings.TrimSpace(issuer)
-	
+
 	if code == "XLM" || strings.EqualFold(code, "native") || issuer == "" {
 		return "XLM:native"
 	}
-	
+
 	return fmt.Sprintf("%s:%s", code, issuer)
 }
 
@@ -1629,21 +1712,21 @@ func formatAmountWithDecimals(s string, decimals int, minWidth int) string {
 	if s == "" {
 		s = "0"
 	}
-	
+
 	// Parse the number to ensure it's valid
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		f = 0
 	}
-	
+
 	// Format to specified decimals
 	formatted := strconv.FormatFloat(f, 'f', decimals, 64)
-	
+
 	// Pad to minimum width
 	if minWidth > 0 && len(formatted) < minWidth {
 		formatted = strings.Repeat(" ", minWidth-len(formatted)) + formatted
 	}
-	
+
 	return formatted
 }
 
@@ -1922,7 +2005,7 @@ func renderSubtitle(title string) string {
 	return boldStyle.Render(title)
 }
 
-func renderFooter(shortcuts string, networkCapacity float64) string {
+func renderFooter(shortcuts string, networkCapacity float64, width int) string {
 	// Format network capacity as percentage
 	statusText := "Network Usage: -- "
 	if networkCapacity >= 0 {
@@ -1930,7 +2013,10 @@ func renderFooter(shortcuts string, networkCapacity float64) string {
 		statusText = fmt.Sprintf("Network Usage: %.0f%% ", pct)
 	}
 
-	w := 140 // fixed width
+	w := width
+	if w <= 0 {
+		w = 140
+	}
 	leftText := shortcuts
 	rightText := statusText
 	gap := w - lipgloss.Width(leftText) - lipgloss.Width(rightText) - 2
@@ -1972,7 +2058,17 @@ func (m model) bottomLine() string {
 	default:
 		shortcuts = "q: quit"
 	}
-	return renderFooter(shortcuts, m.networkCapacity)
+	if m.displayMode {
+		freshness := "waiting for market data"
+		if !m.lastOrderbookAt.IsZero() {
+			freshness = "order book " + humanElapsedShort(time.Since(m.lastOrderbookAt)) + " ago"
+		}
+		if m.err != nil {
+			freshness += " | reconnecting"
+		}
+		shortcuts = freshness
+	}
+	return renderFooter(shortcuts, m.networkCapacity, m.width)
 }
 
 func humanElapsedShort(d time.Duration) string {
@@ -2038,7 +2134,10 @@ func landingView(m model) string {
 
 	// Create credit line right-aligned
 	creditText := "Made with ❤️  by the Zeam Team"
-	w := 140 // fixed width
+	w := m.width
+	if w <= 0 {
+		w = 140
+	}
 	gap := w - lipgloss.Width(creditText)
 	if gap < 0 {
 		gap = 0
@@ -2098,7 +2197,6 @@ func pairInputView(m model) string {
 	bottom := m.bottomLine()
 	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
 }
-
 
 func pairDebugView(m model) string {
 	// Build markdown table
@@ -2204,7 +2302,6 @@ func pairDebugView(m model) string {
 	return lipgloss.JoinVertical(lipgloss.Left, content, padding, bottom)
 }
 
-
 func horizonURL() string {
 	if v := os.Getenv("HORIZON_URL"); v != "" {
 		return v
@@ -2274,27 +2371,73 @@ func resolveAndFetchLPCmd(client *horizonclient.Client, base, quote txnbuild.Ass
 		if override := os.Getenv("LP_POOL_ID"); override != "" {
 			if data, err := fetchLPByID(override); err == nil {
 				return lpDataMsg{data: data}
-			} else {
-				return lpNoteMsg(fmt.Sprintf("Error loading pool: %v", err))
 			}
+			if data, err := fetchLPFromHorizon(client, override); err == nil {
+				return lpDataMsg{data: data}
+			}
+			return lpNoteMsg("Error loading configured pool")
 		}
 		if base == nil || quote == nil {
 			return lpNoteMsg("No pool: not configured")
 		}
 
-		// Look up pool ID from our predefined map
+		// Prefer the issuer-safe config key, then support legacy code-only keys.
+		poolID := liquidityPoolIDs[poolMapKey(base, quote)]
 		pairKey := fmt.Sprintf("%s-%s", assetShort(base), assetShort(quote))
-		poolID, found := liquidityPoolIDs[pairKey]
-		if !found {
+		if poolID == "" {
+			poolID = liquidityPoolIDs[pairKey]
+		}
+		if poolID == "" {
+			page, err := client.LiquidityPools(horizonclient.LiquidityPoolsRequest{
+				Reserves: []string{reserveParam(base), reserveParam(quote)},
+				Limit:    1,
+			})
+			if err == nil && len(page.Embedded.Records) > 0 {
+				poolID = page.Embedded.Records[0].ID
+			}
+		}
+		if poolID == "" {
 			return lpNoteMsg("No pool for " + pairKey)
 		}
 
 		data, err := fetchLPByID(poolID)
-		if err != nil {
+		if err == nil {
+			return lpDataMsg{data: data}
+		}
+		// Stellar Expert provides fee/volume enrichment, but Horizon remains
+		// the reliable source of truth for current reserves.
+		data, horizonErr := fetchLPFromHorizon(client, poolID)
+		if horizonErr != nil {
 			return lpNoteMsg(fmt.Sprintf("Pool fetch error: %v", err))
 		}
 		return lpDataMsg{data: data}
 	}
+}
+
+func fetchLPFromHorizon(client *horizonclient.Client, poolID string) (Liquidity, error) {
+	if client == nil {
+		return Liquidity{}, fmt.Errorf("Horizon client is unavailable")
+	}
+	pool, err := client.LiquidityPoolDetail(horizonclient.LiquidityPoolRequest{
+		LiquidityPoolID: poolID,
+	})
+	if err != nil {
+		return Liquidity{}, err
+	}
+	data := Liquidity{}
+	for i := 0; i < len(pool.Reserves) && i < 2; i++ {
+		asset := pool.Reserves[i].Asset
+		if asset == "native" {
+			data.Codes[i] = "XLM"
+		} else {
+			data.Codes[i] = strings.SplitN(asset, ":", 2)[0]
+		}
+		data.Decimals[i] = 7
+		data.Locked[i] = pool.Reserves[i].Amount
+		data.Fees1d[i], data.Fees7d[i] = "--", "--"
+		data.Vol1d[i], data.Vol7d[i] = "--", "--"
+	}
+	return data, nil
 }
 
 func fetchLPByID(poolID string) (Liquidity, error) {
@@ -2618,7 +2761,8 @@ func fetchExposurePools(asset txnbuild.Asset) []Liquidity {
 
 	// Search through our liquidityPoolIDs map for pairs containing this asset
 	for pairKey, poolID := range liquidityPoolIDs {
-		if strings.Contains(pairKey, assetCode) {
+		codes := strings.Split(pairKey, "-")
+		if len(codes) == 2 && (codes[0] == assetCode || codes[1] == assetCode) {
 			// Check if we already have this pool ID
 			found := false
 			for _, existingID := range poolIDs {
@@ -2665,7 +2809,8 @@ func fetchExposureCmd(client *horizonclient.Client, asset txnbuild.Asset) tea.Cm
 
 		// Search through our liquidityPoolIDs map for pairs containing this asset
 		for pairKey, poolID := range liquidityPoolIDs {
-			if strings.Contains(pairKey, assetCode) {
+			codes := strings.Split(pairKey, "-")
+			if len(codes) == 2 && (codes[0] == assetCode || codes[1] == assetCode) {
 				// Check if we already have this pool ID
 				found := false
 				for _, existingID := range poolIDs {
@@ -2702,18 +2847,31 @@ func fetchExposureCmd(client *horizonclient.Client, asset txnbuild.Asset) tea.Cm
 }
 
 func main() {
-	// Set git commit from build-time variable if available
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Printf("%s (build %s)\n", appVersion, gitCommit)
-		os.Exit(0)
+		return
 	}
 
-	// Check for updates before starting
-	fmt.Println("Checking for updates...")
-	updateRequired, latestVersion, _, err := version.CheckForUpdate(appVersion)
-	if err != nil {
-		log.Printf("Warning: Failed to check for updates: %v", err)
-		// Continue anyway - don't block startup on network issues
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "display" {
+		options.DisplayMode = true
+		args = args[1:]
+	}
+	flags := flag.NewFlagSet("sdexmon", flag.ExitOnError)
+	flags.BoolVar(&options.DisplayMode, "display", options.DisplayMode, "start directly in unattended display mode")
+	flags.BoolVar(&options.FavoritesOnly, "favorites-only", false, "rotate only configured favorite pairs")
+	flags.BoolVar(&options.NoUpdateCheck, "no-update-check", false, "disable the startup release check")
+	flags.StringVar(&options.Pair, "pair", "", "initial configured pair, for example XLM/USDC")
+	flags.DurationVar(&options.Rotate, "rotate", 30*time.Second, "display-mode pair rotation interval; use 0 to disable")
+	_ = flags.Parse(args)
+
+	if !options.NoUpdateCheck {
+		updateAvailable, latestVersion, _, err := version.CheckForUpdate(appVersion)
+		if err != nil {
+			log.Printf("Warning: failed to check for updates: %v", err)
+		} else if updateAvailable {
+			log.Printf("Update available: %s (running %s)", latestVersion, appVersion)
+		}
 	}
 
 	// Load configuration from YAML
@@ -2741,12 +2899,27 @@ func main() {
 		}
 	}
 
-	m := initialModel(client, base, quote)
-	if updateRequired {
-		m.updateRequired = true
-		m.latestVersion = latestVersion
-		m.currentScreen = screenUpgradeRequired
+	if options.DisplayMode && (base == nil || quote == nil) {
+		pairs := displayPairs(options.FavoritesOnly)
+		var selected pairOption
+		var ok bool
+		if options.Pair != "" {
+			selected, ok = findConfiguredPair(options.Pair, pairs)
+			if !ok {
+				log.Fatalf("configured pair %q not found", options.Pair)
+			}
+		} else if len(pairs) > 0 {
+			selected, ok = pairs[0], true
+		}
+		if ok {
+			base, quote, ok = assetsForPair(selected)
+		}
+		if !ok {
+			log.Fatal("display mode requires at least one valid configured pair")
+		}
 	}
+
+	m := initialModel(client, base, quote)
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

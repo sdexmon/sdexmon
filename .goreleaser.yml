@@ -16,6 +16,11 @@ archives:
     files:
       - README.md
       - LICENSE
+      - docs/raspberry-pi.md
+      - packaging/systemd/sdexmon.service
+
+checksum:
+  name_template: "checksums.txt"
 
 release:
   github:

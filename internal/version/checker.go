@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,13 +24,81 @@ type GitHubRelease struct {
 // CompareVersions returns true if remote is newer than local
 // Assumes semantic versioning (e.g., v0.1.2)
 func CompareVersions(local, remote string) bool {
-	// Remove 'v' prefix if present
-	local = strings.TrimPrefix(local, "v")
-	remote = strings.TrimPrefix(remote, "v")
+	localParts, localPre, localOK := parseVersion(local)
+	remoteParts, remotePre, remoteOK := parseVersion(remote)
+	if !localOK || !remoteOK {
+		return false
+	}
+	for i := range localParts {
+		if remoteParts[i] != localParts[i] {
+			return remoteParts[i] > localParts[i]
+		}
+	}
+	// A stable release is newer than a prerelease of the same version.
+	if localPre != remotePre {
+		if localPre == "" {
+			return false
+		}
+		if remotePre == "" {
+			return true
+		}
+		return comparePrerelease(remotePre, localPre) > 0
+	}
+	return false
+}
 
-	// Simple string comparison works for semantic versioning
-	// e.g., "0.1.0" < "0.1.1" < "0.1.2" < "0.2.0"
-	return remote > local
+func parseVersion(value string) ([3]int, string, bool) {
+	var result [3]int
+	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+	core, prerelease, _ := strings.Cut(value, "-")
+	core, _, _ = strings.Cut(core, "+")
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return result, "", false
+	}
+	for i, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 {
+			return result, "", false
+		}
+		result[i] = number
+	}
+	return result, prerelease, true
+}
+
+func comparePrerelease(left, right string) int {
+	leftParts := strings.Split(left, ".")
+	rightParts := strings.Split(right, ".")
+	for i := 0; i < len(leftParts) && i < len(rightParts); i++ {
+		if leftParts[i] == rightParts[i] {
+			continue
+		}
+		leftNumber, leftErr := strconv.Atoi(leftParts[i])
+		rightNumber, rightErr := strconv.Atoi(rightParts[i])
+		switch {
+		case leftErr == nil && rightErr == nil:
+			if leftNumber < rightNumber {
+				return -1
+			}
+			return 1
+		case leftErr == nil:
+			return -1
+		case rightErr == nil:
+			return 1
+		case leftParts[i] < rightParts[i]:
+			return -1
+		default:
+			return 1
+		}
+	}
+	switch {
+	case len(leftParts) < len(rightParts):
+		return -1
+	case len(leftParts) > len(rightParts):
+		return 1
+	default:
+		return 0
+	}
 }
 
 // FetchLatestVersion fetches the latest release version from GitHub

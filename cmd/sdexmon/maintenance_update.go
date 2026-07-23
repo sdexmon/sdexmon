@@ -234,8 +234,11 @@ func handleConfirmationKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 		m.currentScreen = screenLanding
 		m.status = fmt.Sprintf("Added pair %s/%s", cd.AssetA.GetCode(), cd.AssetB.GetCode())
 
-		// Reload configured pairs to include the new pair
-		return m, reloadConfigCmd()
+		if err := loadConfiguration(); err != nil {
+			m.maintenanceState.ErrorMessage = fmt.Sprintf("Saved, but reload failed: %v", err)
+		}
+		m.filteredPairs = configuredPairs
+		return m, nil
 	}
 	return m, nil
 }
@@ -259,14 +262,5 @@ func fetchConfirmationDataCmd(client *horizonclient.Client, assetA, assetB txnbu
 			return models.MaintenanceErrMsg{Err: err}
 		}
 		return models.ConfirmationDataMsg{Data: data}
-	}
-}
-
-func reloadConfigCmd() tea.Cmd {
-	return func() tea.Msg {
-		// Reload config to pick up new pairs
-		// For now, this is a no-op since we need to restart
-		// In the future, we could dynamically reload
-		return nil
 	}
 }

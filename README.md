@@ -101,13 +101,13 @@ Manual download:
 
 Go install (requires Go toolchain):
 
-    go install github.com/sdexmon/sdexmon@latest
+    go install github.com/sdexmon/sdexmon/cmd/sdexmon@latest
 
 From source:
 
     git clone https://github.com/sdexmon/sdexmon.git
     cd sdexmon
-    go run .
+    go run ./cmd/sdexmon
 
 
 [ 5 ] USAGE
@@ -142,12 +142,24 @@ Optional environment variables:
     # Horizon endpoint
     export HORIZON_URL="https://horizon.stellar.org"
 
-    # Start directly at a specific pair
+    # Supply the pair used by display mode
     export BASE_ASSET="native"
     export QUOTE_ASSET="USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
     # Disable debug mode
     export DEBUG="false"
+
+Passive display mode:
+
+    # Start immediately and rotate favorite pairs every 30 seconds
+    sdexmon display --favorites-only --rotate=30s --no-update-check
+
+    # Pin the display to one configured pair
+    sdexmon display --pair XLM/USDC --rotate=0
+
+Raspberry Pi 5 and systemd setup:
+
+    docs/raspberry-pi.md
 
 
 [ 7 ] DEVELOPMENT
