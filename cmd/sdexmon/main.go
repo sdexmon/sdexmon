@@ -37,6 +37,23 @@ const (
 	maxTradesKept     = 120
 )
 
+// Layout constants for the Pair Info screen.
+const (
+	defaultTerminalWidth  = 140 // assumed width before the first WindowSizeMsg
+	defaultTerminalHeight = 60  // assumed height before the first WindowSizeMsg
+	minContentWidth       = 40
+	maxContentWidth       = 180
+	// Below this width the order book and trades panels no longer fit
+	// side by side, so they are stacked instead.
+	minSideBySideWidth = 102
+	panelBorderWidth   = 2 // left + right border columns
+	panelBorderHeight  = 2 // top + bottom border rows
+	maxOrderbookDepth  = 7
+	minOrderbookDepth  = 3
+	maxExposureRows    = 10
+	minExposureRows    = 3
+)
+
 // Screen states
 type screenState int
 
@@ -220,9 +237,6 @@ type model struct {
 	baseExposure  []Liquidity // exposure pools for base asset in pair
 	quoteExposure []Liquidity // exposure pools for quote asset in pair
 
-	// debug log buffer
-	debugLogs []string
-
 	width  int
 	height int
 
@@ -277,11 +291,6 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 	// Check for debug mode
 	debugMode := os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1"
 
-	// Setup custom log writer if debug mode
-	if debugMode {
-		setupDebugLogger()
-	}
-
 	initialScreen := screenLanding
 	if options.DisplayMode && base != nil && quote != nil {
 		initialScreen = screenPairInfo
@@ -302,7 +311,6 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		displayMode:      options.DisplayMode,
 		rotateInterval:   options.Rotate,
 		favoritesOnly:    options.FavoritesOnly,
-		debugLogs:        make([]string, 0, 100),
 		exposurePools:    make([]Liquidity, 0),
 		showPairPopup:    false, // Start on landing page, open popup on enter
 		pairIndex:        currentPairIndex(base, quote),
@@ -840,52 +848,67 @@ func pairInfoView(m model) string {
 
 	subtitle := fmt.Sprintf("Pair Info - %s/%s", assetShort(m.base), assetShort(m.quote))
 
-	ob := m.renderOrderbook()
-	tr := m.renderTrades()
-	lp := m.renderLiquidity()
-	baseExp := m.renderExposure(m.base, m.baseExposure)
-	quoteExp := m.renderExposure(m.quote, m.quoteExposure)
+	targetHeight := defaultTerminalHeight
+	if m.height > 0 {
+		targetHeight = m.height
+	}
 
-	// layout: four rows
+	// Reserve the last column: writing into it makes terminals auto-wrap, which
+	// shifts every following line and corrupts the whole frame.
+	availWidth := defaultTerminalWidth - 1
+	if m.width > 0 {
+		availWidth = m.width - 1
+	}
+	if availWidth > maxContentWidth {
+		availWidth = maxContentWidth
+	}
+	if availWidth < minContentWidth {
+		availWidth = minContentWidth
+	}
+
+	lp := m.renderLiquidity()
+
+	// Size the variable-height panels to the space actually available.
+	depth, expRows := fitPanelRows(targetHeight, lipgloss.Height(lp)+panelBorderHeight)
+
+	ob := m.renderOrderbook(depth)
+	tr := m.renderTrades(2*depth + 1)
+	baseExp := m.renderExposure(m.base, m.baseExposure, expRows)
+	quoteExp := m.renderExposure(m.quote, m.quoteExposure, expRows)
+
+	// layout: three rows
 	// Row 1: ORDER BOOK (left) and TRADES (right)
 	// Row 2: LIQUIDITY POOL (full width)
 	// Row 3: EXPOSURE BASE (left) and EXPOSURE QUOTE (right)
-	contentWidth := 112
-	if m.width > 0 {
-		contentWidth = m.width - 4
-	}
-	if contentWidth < 72 {
-		contentWidth = 72
-	}
-	if contentWidth > 180 {
-		contentWidth = 180
-	}
-	leftW := contentWidth * 3 / 5
-	rightW := contentWidth - leftW - 1
+	// Each panel border costs 2 columns, and side-by-side panels are separated
+	// by a single space, so paired panels get availWidth-5 of content width.
+	fullW := availWidth - panelBorderWidth
+	pairedW := availWidth - 2*panelBorderWidth - 1
 
-	leftTop := panelStyle.Width(leftW).Render(ob)
-	rightTop := panelStyle.Width(rightW).Render(tr)
-	row1 := lipgloss.JoinHorizontal(lipgloss.Left, leftTop, " ", rightTop)
-	if contentWidth < 100 {
-		leftTop = panelStyle.Width(contentWidth).Render(ob)
-		rightTop = panelStyle.Width(contentWidth).Render(tr)
-		row1 = lipgloss.JoinVertical(lipgloss.Left, leftTop, rightTop)
+	var row1, row3 string
+	if availWidth < minSideBySideWidth {
+		row1 = lipgloss.JoinVertical(lipgloss.Left,
+			panelStyle.Width(fullW).Render(ob),
+			panelStyle.Width(fullW).Render(tr),
+		)
+		row3 = lipgloss.JoinVertical(lipgloss.Left,
+			panelStyle.Width(fullW).Render(baseExp),
+			panelStyle.Width(fullW).Render(quoteExp),
+		)
+	} else {
+		leftW := pairedW * 3 / 5
+		rightW := pairedW - leftW
+		row1 = lipgloss.JoinHorizontal(lipgloss.Left,
+			panelStyle.Width(leftW).Render(ob), " ", panelStyle.Width(rightW).Render(tr),
+		)
+		expW := pairedW / 2
+		row3 = lipgloss.JoinHorizontal(lipgloss.Left,
+			panelStyle.Width(expW).Render(baseExp), " ", panelStyle.Width(expW).Render(quoteExp),
+		)
 	}
 
 	// Full width panel
-	lpW := contentWidth
-	row2 := panelStyle.Width(lpW).Render(lp)
-
-	// Exposure panels - equal width split
-	expW := (lpW - 1) / 2 // Equal width for both exposure panels
-	expBasePanel := panelStyle.Width(expW).Render(baseExp)
-	expQuotePanel := panelStyle.Width(expW).Render(quoteExp)
-	row3 := lipgloss.JoinHorizontal(lipgloss.Left, expBasePanel, " ", expQuotePanel)
-	if contentWidth < 100 {
-		expBasePanel = panelStyle.Width(contentWidth).Render(baseExp)
-		expQuotePanel = panelStyle.Width(contentWidth).Render(quoteExp)
-		row3 = lipgloss.JoinVertical(lipgloss.Left, expBasePanel, expQuotePanel)
-	}
+	row2 := panelStyle.Width(fullW).Render(lp)
 
 	bottom := m.bottomLine()
 
@@ -901,11 +924,19 @@ func pairInfoView(m model) string {
 		"", // 1 row spacer
 		row3,
 	)
-	contentHeight := lipgloss.Height(content)
-	targetHeight := 60
-	if m.height > 0 {
-		targetHeight = m.height
+
+	// Never emit more lines than the terminal has: overflow scrolls the alt
+	// screen and leaves a garbled frame behind.
+	maxContentHeight := targetHeight - 2 // -2 for the padding and bottom lines
+	if maxContentHeight < 1 {
+		maxContentHeight = 1
 	}
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > maxContentHeight {
+		contentLines = contentLines[:maxContentHeight]
+		content = strings.Join(contentLines, "\n")
+	}
+	contentHeight := len(contentLines)
 
 	paddingLines := targetHeight - contentHeight - 2 // -2 for bottom line itself
 	if paddingLines < 0 {
@@ -923,7 +954,7 @@ func pairInfoView(m model) string {
 	if m.showPairPopup {
 		popup := pairSelectorPopup(m)
 		// Calculate position to center popup
-		screenWidth := 140
+		screenWidth := defaultTerminalWidth
 		screenHeight := targetHeight
 		if m.width > 0 {
 			screenWidth = m.width
@@ -948,7 +979,33 @@ func pairInfoView(m model) string {
 	return baseView
 }
 
-func (m model) renderOrderbook() string {
+// fitPanelRows picks the order book depth and exposure row counts that fit the
+// available terminal height, shrinking the exposure list before the order book.
+// lpHeight is the rendered height of the liquidity pool panel, borders included.
+func fitPanelRows(targetHeight, lpHeight int) (depth, expRows int) {
+	depth = maxOrderbookDepth
+	expRows = maxExposureRows
+
+	// Fixed chrome: version line, blank line, ASCII header (10), subtitle,
+	// two row spacers, the padding line and the footer.
+	const chrome = 1 + 1 + 10 + 1 + 2 + 2
+	// Row 1 costs 2*depth+3 content rows (title, header, spread) plus borders;
+	// row 3 costs expRows+1 content rows (title) plus borders.
+	budget := targetHeight - chrome - lpHeight - (3 + panelBorderHeight) - (1 + panelBorderHeight)
+	if budget <= 0 {
+		return minOrderbookDepth, minExposureRows
+	}
+	for 2*depth+expRows > budget && expRows > minExposureRows {
+		expRows--
+	}
+	for 2*depth+expRows > budget && depth > minOrderbookDepth {
+		depth--
+	}
+	return depth, expRows
+}
+
+// renderOrderbook renders up to depth levels per side.
+func (m model) renderOrderbook(depth int) string {
 	allBids := m.orderbook.Bids
 	allAsks := m.orderbook.Asks
 
@@ -965,8 +1022,11 @@ func (m model) renderOrderbook() string {
 	filteredBids := filterOutlierBids(allBids)
 	filteredAsks := filterOutlierAsks(allAsks)
 
-	// Limit to 7 levels per side; we will pad to always show 7
-	maxRows := 7
+	// Limit to depth levels per side; we will pad to always show depth rows
+	maxRows := depth
+	if maxRows < 1 {
+		maxRows = 1
+	}
 	bids := filteredBids
 	asks := filteredAsks
 	if len(bids) > maxRows {
@@ -1220,7 +1280,8 @@ func (m model) renderLiquidity() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
+// renderExposure renders exactly maxDisplay rows, padding when there are fewer pools.
+func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity, maxDisplay int) string {
 	assetCode := assetShort(asset)
 	title := boldStyle.Render(fmt.Sprintf("Top Liq Pools against %s", assetCode))
 	lines := []string{title}
@@ -1278,9 +1339,11 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 		}
 	}
 
-	// Always render exactly 10 rows
+	// Always render exactly maxDisplay rows
 	barWidth := 12
-	maxDisplay := 10
+	if maxDisplay < 1 {
+		maxDisplay = 1
+	}
 	for i := 0; i < maxDisplay; i++ {
 		if i < len(entries) {
 			e := entries[i]
@@ -1309,7 +1372,7 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 			line := lipgloss.JoinHorizontal(lipgloss.Top, pairStr, "  ", amtFormatted, " ", bar)
 			lines = append(lines, line)
 		} else {
-			// Pad with empty line if fewer than 10 pools
+			// Pad with empty line when there are fewer pools than rows
 			lines = append(lines, "")
 		}
 	}
@@ -1317,7 +1380,8 @@ func (m model) renderExposure(asset txnbuild.Asset, pools []Liquidity) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m model) renderTrades() string {
+// renderTrades renders up to limit of the most recent trades.
+func (m model) renderTrades(limit int) string {
 	// Get decimal configuration for current pair
 	baseDecimals := 2  // default
 	quoteDecimals := 2 // default
@@ -1329,7 +1393,9 @@ func (m model) renderTrades() string {
 
 	rows := []string{boldStyle.Render("TRADES (latest)")}
 	rows = append(rows, dimStyle.Render("ELAPSED   PRICE         AMOUNT"))
-	limit := 15 // 7 + 7 + 1
+	if limit < 1 {
+		limit = 1
+	}
 	count := 0
 	now := time.Now().UTC()
 	for i := len(m.trades) - 1; i >= 0 && count < limit; i-- {
@@ -2276,14 +2342,14 @@ func pairDebugView(m model) string {
 	}
 
 	// Add debug logs if available
-	if len(m.debugLogs) > 0 {
+	if logs := getDebugLogs(); len(logs) > 0 {
 		lines = append(lines, "", boldStyle.Render("Logs (latest)"))
-		logStart := len(m.debugLogs) - 20
+		logStart := len(logs) - 20
 		if logStart < 0 {
 			logStart = 0
 		}
-		for i := logStart; i < len(m.debugLogs); i++ {
-			lines = append(lines, dimStyle.Render(m.debugLogs[i]))
+		for i := logStart; i < len(logs); i++ {
+			lines = append(lines, dimStyle.Render(logs[i]))
 		}
 	}
 
@@ -2719,9 +2785,16 @@ func (w debugLogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// setupDebugLogger captures log output in memory instead of writing it to
+// stderr. Anything written to the terminal while the alt screen is active
+// scrolls the frame and corrupts the TUI.
 func setupDebugLogger() {
-	// Only write to debug buffer, not to stderr to keep TUI clean
 	log.SetOutput(debugLogWriter{})
+}
+
+// restoreLogger sends log output back to stderr, for use once the TUI has exited.
+func restoreLogger() {
+	log.SetOutput(os.Stderr)
 }
 
 func getDebugLogs() []string {
@@ -2921,9 +2994,14 @@ func main() {
 
 	m := initialModel(client, base, quote)
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		log.Fatal(err)
+	// Capture log output in memory for the lifetime of the TUI. Startup
+	// diagnostics above still go to stderr, but once the alt screen is active
+	// any stray write (for example a failing Horizon poll) would corrupt it.
+	setupDebugLogger()
+	_, runErr := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	restoreLogger()
+	if runErr != nil {
+		log.Fatal(runErr)
 	}
 
 	// Clear terminal on exit
