@@ -19,12 +19,12 @@ const (
 
 // StellarExpertAsset represents an asset from stellar.expert API
 type StellarExpertAsset struct {
-	Code       string  `json:"code"`
-	Issuer     string  `json:"issuer"`
-	Domain     string  `json:"domain"`
-	Supply     string  `json:"supply"`
-	Trustlines int     `json:"trustlines"`
-	Name       string  `json:"name"`
+	Code       string `json:"code"`
+	Issuer     string `json:"issuer"`
+	Domain     string `json:"domain"`
+	Supply     string `json:"supply"`
+	Trustlines int    `json:"trustlines"`
+	Name       string `json:"name"`
 }
 
 // PairConfirmationData holds data for the confirmation screen

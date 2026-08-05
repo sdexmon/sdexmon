@@ -21,14 +21,14 @@ func (f *flexNumber) UnmarshalJSON(data []byte) error {
 		*f = flexNumber(s)
 		return nil
 	}
-	
+
 	// Try as number
 	var n float64
 	if err := json.Unmarshal(data, &n); err == nil {
 		*f = flexNumber(strconv.FormatFloat(n, 'f', 0, 64))
 		return nil
 	}
-	
+
 	return fmt.Errorf("supply must be a number or string")
 }
 
@@ -87,7 +87,7 @@ func SearchAssetsByDomain(domain string) ([]models.StellarExpertAsset, error) {
 	for _, record := range result.Embedded.Records {
 		// Convert supply to string
 		supplyStr := record.Supply.String()
-		
+
 		asset := models.StellarExpertAsset{
 			Code:       record.TomlInfo.Code,
 			Issuer:     record.TomlInfo.Issuer,
@@ -96,7 +96,7 @@ func SearchAssetsByDomain(domain string) ([]models.StellarExpertAsset, error) {
 			Trustlines: 0, // Not easily available in this format
 			Name:       record.TomlInfo.Name,
 		}
-		
+
 		// Skip if no code or issuer (invalid asset)
 		if asset.Code == "" || asset.Issuer == "" {
 			// Try parsing from asset string as fallback
@@ -108,7 +108,7 @@ func SearchAssetsByDomain(domain string) ([]models.StellarExpertAsset, error) {
 				continue // Skip invalid assets
 			}
 		}
-		
+
 		assets = append(assets, asset)
 	}
 

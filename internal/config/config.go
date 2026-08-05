@@ -95,11 +95,11 @@ type Config struct {
 		Version     string `yaml:"version"`
 		DefaultPair string `yaml:"default_pair"`
 	} `yaml:"app"`
-	
+
 	Pairs []Pair `yaml:"pairs"`
-	
+
 	Assets []Asset `yaml:"assets"`
-	
+
 	Preferences struct {
 		DefaultOrderBookDepth int  `yaml:"default_order_book_depth"`
 		DefaultLiquidityPools int  `yaml:"default_liquidity_pools"`
@@ -107,7 +107,7 @@ type Config struct {
 		RefreshIntervalMs     int  `yaml:"refresh_interval_ms"`
 		ShowDebug             bool `yaml:"show_debug"`
 	} `yaml:"preferences"`
-	
+
 	SystemSettings struct {
 		TerminalSize struct {
 			Width  int `yaml:"width"`
@@ -144,43 +144,43 @@ func GetConfigPath() string {
 // LoadConfig loads the configuration from YAML file
 func LoadConfig() (*Config, error) {
 	configPath := GetConfigPath()
-	
+
 	// If config doesn't exist, return default config
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		return getDefaultConfig(), nil
 	}
-	
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-	
+
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
-	
+
 	return &config, nil
 }
 
 // SaveConfig saves the configuration to YAML file
 func SaveConfig(config *Config) error {
 	configPath := GetConfigPath()
-	
+
 	// Ensure config directory exists
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-	
+
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to YAML: %w", err)
 	}
-	
+
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -188,7 +188,7 @@ func SaveConfig(config *Config) error {
 func AddPair(config *Config, name, base, quote, lpID string) error {
 	// Determine show_decimals based on base and quote assets
 	showDecimals := 2 // default
-	
+
 	// Check if either base or quote contains BTCZ (should be 0 decimals)
 	if strings.Contains(base, "BTCZ") || strings.Contains(quote, "BTCZ") {
 		showDecimals = 0
@@ -197,7 +197,7 @@ func AddPair(config *Config, name, base, quote, lpID string) error {
 	if strings.Contains(base, "XAUZ") || strings.Contains(quote, "XAUZ") {
 		showDecimals = 7
 	}
-	
+
 	newPair := Pair{
 		Name:         name,
 		Base:         base,
@@ -206,7 +206,7 @@ func AddPair(config *Config, name, base, quote, lpID string) error {
 		Favorite:     false,
 		ShowDecimals: showDecimals,
 	}
-	
+
 	config.Pairs = append(config.Pairs, newPair)
 	return SaveConfig(config)
 }
@@ -219,13 +219,13 @@ func (c *Config) GetPairDecimals(baseName, quoteName string) (int, int) {
 		pairBaseName := parseAssetCode(pair.Base)
 		pairQuoteName := parseAssetCode(pair.Quote)
 		if (pairBaseName == baseName && pairQuoteName == quoteName) ||
-		   (pairBaseName == quoteName && pairQuoteName == baseName) {
+			(pairBaseName == quoteName && pairQuoteName == baseName) {
 			if pair.ShowDecimals > 0 {
 				return pair.ShowDecimals, pair.ShowDecimals
 			}
 		}
 	}
-	
+
 	// Look up individual assets in the Assets array
 	baseDecimals := c.GetAssetDecimals(baseName)
 	quoteDecimals := c.GetAssetDecimals(quoteName)
@@ -240,7 +240,7 @@ func (c *Config) GetAssetDecimals(assetName string) int {
 			return asset.ShowDecimals
 		}
 	}
-	
+
 	// Try to match by asset code (e.g., "USDC")
 	assetCode := parseAssetCode(assetName)
 	for _, asset := range c.Assets {
@@ -248,7 +248,7 @@ func (c *Config) GetAssetDecimals(assetName string) int {
 			return asset.ShowDecimals
 		}
 	}
-	
+
 	// Fall back to default based on asset characteristics
 	return getAssetDefaultDecimals(assetCode)
 }
