@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,12 +59,17 @@ const (
 type screenState int
 
 const (
-	screenUpgradeRequired screenState = iota
-	screenLanding
+	screenLanding screenState = iota
 	screenPairInfo
 	screenPairDebug
-	screenPairInput // custom pair input screen
+	screenPairInput   // custom pair input screen
+	screenUpgrade     // advisory update notice with upgrade instructions
+	screenMaintenance // add, remove and list configured pairs
 )
+
+// upgradeCommand is the documented one-liner installer, also shown on the
+// upgrade screen so users can run it manually.
+const upgradeCommand = "curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash"
 
 const asciiAquila = `███████  ██████  █████  ██████       █████   ██████  ██    ██ ██ ██       █████  
 ██      ██      ██   ██ ██   ██     ██   ██ ██    ██ ██    ██ ██ ██      ██   ██ 
@@ -200,8 +206,19 @@ type (
 	baseExposureDataMsg  struct{ pools []Liquidity }
 	quoteExposureDataMsg struct{ pools []Liquidity }
 	networkStatsMsg      struct{ capacityUsage float64 }
+	upgradeFinishedMsg   struct{ err error }
 	errMsg               error
 )
+
+// updateInfo carries the startup release check result into the model.
+type updateInfo struct {
+	Available bool
+	Latest    string
+}
+
+// upgradeRan reports whether the in-app upgrade was executed, so main can tell
+// the user to restart once the alt screen has been torn down.
+var upgradeRan bool
 
 // FeeStats represents the response from /fee_stats endpoint
 type FeeStats struct {
@@ -219,8 +236,10 @@ type model struct {
 	currentScreen screenState
 
 	// Version check
-	updateRequired bool
-	latestVersion  string
+	updateAvailable bool
+	latestVersion   string
+	// upgradeReturn is the screen to go back to when leaving the upgrade notice.
+	upgradeReturn screenState
 
 	// Asset selection
 	base          txnbuild.Asset
@@ -275,7 +294,7 @@ type model struct {
 	err    error
 }
 
-func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) model {
+func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset, update updateInfo) model {
 	b := textinput.New()
 	b.Placeholder = "native or CODE:ISSUER (base)"
 	b.Prompt = "BASE > "
@@ -299,9 +318,19 @@ func initialModel(client *horizonclient.Client, base, quote txnbuild.Asset) mode
 		initialScreen = screenPairInfo
 	}
 
+	// Surface the update notice on startup, but never in unattended display
+	// mode: it must keep rendering market data without a human present.
+	upgradeReturn := initialScreen
+	if update.Available && !options.DisplayMode {
+		initialScreen = screenUpgrade
+	}
+
 	return model{
 		client:           client,
 		currentScreen:    initialScreen,
+		updateAvailable:  update.Available,
+		latestVersion:    update.Latest,
+		upgradeReturn:    upgradeReturn,
 		base:             base,
 		quote:            quote,
 		trades:           make([]hProtocol.Trade, 0, 64),
@@ -343,19 +372,29 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Global quit (but block on upgrade screen)
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
-			if m.currentScreen == screenUpgradeRequired {
-				// Force upgrade - don't allow quit
-				return m, nil
-			}
+		// Global quit. The upgrade notice is advisory, so quitting always works
+		// and an outdated build can never trap the user. "q" stands down while a
+		// maintenance text field has focus, otherwise domains containing a "q"
+		// could not be typed.
+		typingInMaintenance := m.currentScreen == screenMaintenance && m.maintenanceState.AcceptsTextInput()
+		if msg.String() == "ctrl+c" || (msg.String() == "q" && !typingInMaintenance) {
 			return m, tea.Quit
 		}
 
 		// Screen-specific navigation
 		switch m.currentScreen {
-		case screenUpgradeRequired:
-			// Block all navigation on upgrade screen
+		case screenMaintenance:
+			return handleMaintenanceUpdate(m, msg)
+		case screenUpgrade:
+			switch msg.String() {
+			case "enter":
+				// Run the installer with the terminal handed over to it.
+				m.status = "running installer"
+				return m, runUpgradeCmd()
+			case "esc":
+				m.currentScreen = m.upgradeReturn
+				return m, nil
+			}
 			return m, nil
 
 		case screenLanding:
@@ -470,6 +509,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
+			case "m":
+				return m.openMaintenance(), nil
+			case "u":
+				return m.openUpgradeNotice(), nil
 			}
 
 		case screenPairInput:
@@ -632,6 +675,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "d":
 				m.currentScreen = screenPairDebug
 				return m, nil
+			case "m":
+				return m.openMaintenance(), nil
+			case "u":
+				return m.openUpgradeNotice(), nil
 			}
 
 		case screenPairDebug:
@@ -639,6 +686,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "d":
 				m.currentScreen = screenPairInfo
 				return m, nil
+			case "u":
+				return m.openUpgradeNotice(), nil
 			}
 			return m, nil
 		}
@@ -734,6 +783,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.networkCapacity = msg.capacityUsage
 		m.lastNetworkAt = time.Now()
 		return m, nil
+	case upgradeFinishedMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("upgrade failed: %w", msg.err)
+			m.status = "upgrade failed"
+			return m, nil
+		}
+		// The running binary has just been replaced, so a restart is required.
+		upgradeRan = true
+		return m, tea.Quit
+	case models.AssetSearchResultsMsg, models.ConfirmationDataMsg, models.MaintenanceErrMsg:
+		// Async results of the maintenance flow, delivered regardless of which
+		// screen is showing.
+		return handleMaintenanceUpdate(m, msg)
 	case errMsg:
 		m.err = msg
 		return m, nil
@@ -742,12 +804,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openMaintenance switches to the pair maintenance screen with a clean state,
+// so a previous visit cannot leave a stale cursor or error behind.
+func (m model) openMaintenance() model {
+	m.currentScreen = screenMaintenance
+	m.maintenanceState = initMaintenanceState()
+	return m
+}
+
+// openUpgradeNotice switches to the upgrade notice, remembering the current
+// screen so esc can return to it. It is a no-op when the running build is
+// already up to date.
+func (m model) openUpgradeNotice() model {
+	if !m.updateAvailable {
+		return m
+	}
+	m.upgradeReturn = m.currentScreen
+	m.currentScreen = screenUpgrade
+	return m
+}
+
+// runUpgradeCmd suspends the TUI and hands the terminal to the documented
+// installer, so the user can upgrade without leaving sdexmon.
+func runUpgradeCmd() tea.Cmd {
+	cmd := exec.Command("bash", "-c", upgradeCommand)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return upgradeFinishedMsg{err: err}
+	})
+}
+
 // View
 
 func (m model) View() string {
 	switch m.currentScreen {
-	case screenUpgradeRequired:
-		return ui.RenderUpgradeRequired(appVersion, m.latestVersion, m.width, m.height)
+	case screenUpgrade:
+		return ui.RenderUpgradeAvailable(appVersion, m.latestVersion, upgradeCommand, m.width, m.height)
 	case screenLanding:
 		return landingView(m)
 	case screenPairInput:
@@ -756,6 +847,8 @@ func (m model) View() string {
 		return pairInfoView(m)
 	case screenPairDebug:
 		return pairDebugView(m)
+	case screenMaintenance:
+		return maintenanceView(m)
 	default:
 		return landingView(m)
 	}
@@ -2108,7 +2201,7 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "enter: pairs  q: quit"
+			shortcuts = "enter: pairs  m: maintain  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
@@ -2118,14 +2211,22 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "p: pairs  d: detail  q: quit"
+			shortcuts = "p: pairs  d: detail  m: maintain  q: quit"
 		}
 	case screenPairDebug:
 		shortcuts = "d: back  q: quit"
 	case screenPairInput:
 		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
+	case screenUpgrade:
+		shortcuts = "enter: run installer  esc: back  q: quit"
+	case screenMaintenance:
+		shortcuts = maintenanceShortcuts(m.maintenanceState.Screen)
 	default:
 		shortcuts = "q: quit"
+	}
+	// Advertise the upgrade shortcut only while a newer release is known.
+	if m.updateAvailable && m.currentScreen != screenUpgrade && !m.showPairPopup {
+		shortcuts = "u: upgrade  " + shortcuts
 	}
 	if m.displayMode {
 		freshness := "waiting for market data"
@@ -2941,12 +3042,14 @@ func main() {
 	flags.DurationVar(&options.Rotate, "rotate", 30*time.Second, "display-mode pair rotation interval; use 0 to disable")
 	_ = flags.Parse(args)
 
+	var update updateInfo
 	if !options.NoUpdateCheck {
 		updateAvailable, latestVersion, _, err := version.CheckForUpdate(appVersion)
 		if err != nil {
 			log.Printf("Warning: failed to check for updates: %v", err)
 		} else if updateAvailable {
 			log.Printf("Update available: %s (running %s)", latestVersion, appVersion)
+			update = updateInfo{Available: true, Latest: latestVersion}
 		}
 	}
 
@@ -2995,7 +3098,7 @@ func main() {
 		}
 	}
 
-	m := initialModel(client, base, quote)
+	m := initialModel(client, base, quote, update)
 
 	// Capture log output in memory for the lifetime of the TUI. Startup
 	// diagnostics above still go to stderr, but once the alt screen is active
@@ -3009,4 +3112,8 @@ func main() {
 
 	// Clear terminal on exit
 	fmt.Print("\033[2J\033[H")
+
+	if upgradeRan {
+		fmt.Println("Upgrade finished. Start sdexmon again to run the new version.")
+	}
 }

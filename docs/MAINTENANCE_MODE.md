@@ -16,24 +16,26 @@ Press `m` from:
 - Press `1` to start "Add Asset Pair" flow
 - Future options (2 & 3) are coming soon
 
-### 2. Asset A - Domain Input
-- Enter a domain name to search for assets (e.g., `zeam.money`)
-- Press `enter` to search stellar.expert API
-- Press `esc` to go back
+### 2. Asset A - Search Source
+Pick how the asset should be found:
+- `1` Domain search (SEP-1): reads `https://<domain>/.well-known/stellar.toml`
+  and lists only what that domain publishes. Authoritative.
+- `2` Asset search: fuzzy stellar.expert lookup by code or name. Convenient but
+  unverified, so every row shows its home domain.
+- `3` stellar.expert Top 50: the most active assets on the network.
 
-### 3. Asset A - Selection
-- Browse search results with `↑`/`↓` or `k`/`j`
-- Assets display as: `CODE - Name (issuer...)`
-- Press `enter` to select
-- Press `esc` to go back and try a different domain
+### 3. Asset A - Query
+- Domain and asset search prompt for text; the Top 50 loads straight away
+- Press `enter` to run the lookup, `esc` to pick a different source
 
-### 4. Asset B - Domain Input
-- Same as Asset A domain input
-- Enter domain for the second asset in the pair
+### 4. Asset A - Selection
+- Browse results with `↑`/`↓` or `k`/`j`
+- Rows show: `CODE  NAME  HOME DOMAIN  ISSUER  NOTES`, where notes flag
+  stellar.toml verification, a non-live status, and the trustline count
+- Press `enter` to select, `esc` to go back to the source menu
 
-### 5. Asset B - Selection
-- Same as Asset A selection
-- Select the second asset
+### 5. Asset B
+- Same three steps as asset A, with the chosen asset A shown for reference
 
 ### 6. Confirmation Screen
 - Displays:
@@ -93,17 +95,24 @@ custom_pairs:
 
 ## API Integration
 
+### SEP-1 stellar.toml
+
+**Endpoint:** `https://<domain>/.well-known/stellar.toml`
+
+The source of truth for domain search. Only the `[[CURRENCIES]]` a domain
+publishes itself are listed, so lookalike assets from unrelated issuers cannot
+appear. Dead entries, code templates and invalid issuers are dropped.
+
 ### stellar.expert API
 
-**Endpoint:** `https://api.stellar.expert/explorer/public/asset?search=<domain>`
+**Endpoints:**
+- `https://api.stellar.expert/explorer/public/asset?search=<term>` - fuzzy asset
+  search, and the fallback for a domain with no reachable stellar.toml (then
+  filtered to an exact home domain match)
+- `https://api.stellar.expert/explorer/public/asset-list/top50` - Top 50 list
 
-Used to search for assets by domain name. Returns asset details including:
-- Code
-- Issuer
-- Domain
-- Supply
-- Trustlines
-- Name
+Returns asset details including code, issuer, home domain, trustline count and
+name.
 
 ### Horizon API
 

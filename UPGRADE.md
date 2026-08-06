@@ -49,8 +49,8 @@ If you prefer to manually upgrade:
 
 Starting from **v0.1.2**, sdexmon includes:
 - **Automatic version checking** on startup
-- **Forced upgrades** when critical updates are available
-- You'll be prompted to upgrade if a newer version is detected
+- An **upgrade notice** when a newer release is detected, with a `u: upgrade` shortcut
+- Press `enter` on the notice to run the installer in place, or `esc` to keep using the current version
 
 ### Troubleshooting
 
@@ -84,7 +84,7 @@ exec $SHELL
 
 ## Version History
 
-- **v0.1.2** - Added automatic version checking and forced upgrades
+- **v0.1.2** - Added automatic version checking and the in-app upgrade notice
 - **v0.1.1** - Fixed build configuration and wrapper script
 - **v0.1.0** - Initial release with maintenance mode
 

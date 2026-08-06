@@ -9,15 +9,18 @@ import (
 var (
 	upgradeBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("196")). // Red border
+			BorderForeground(lipgloss.Color("214")). // Amber border
 			Padding(2, 4).
 			MarginTop(2).
 			MarginBottom(2)
 
 	upgradeHeaderStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("196")).
+				Foreground(lipgloss.Color("214")). // Amber: advisory, not fatal
 				MarginBottom(1)
+
+	upgradeHintStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240"))
 
 	upgradeTextStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("252"))
@@ -29,9 +32,11 @@ var (
 				MarginBottom(1)
 )
 
-// RenderUpgradeRequired renders the upgrade required screen
-func RenderUpgradeRequired(currentVersion, latestVersion string, width, height int) string {
-	content := upgradeHeaderStyle.Render("⚠ UPDATE REQUIRED ⚠") + "\n\n"
+// RenderUpgradeAvailable renders the update notice screen. The notice is
+// advisory: the caller must keep esc (dismiss) and q/ctrl+c (quit) working so an
+// outdated build can never lock the user out of the app.
+func RenderUpgradeAvailable(currentVersion, latestVersion, upgradeCommand string, width, height int) string {
+	content := upgradeHeaderStyle.Render("UPDATE AVAILABLE") + "\n\n"
 
 	content += upgradeTextStyle.Render(
 		fmt.Sprintf("Your version: %s\n", currentVersion),
@@ -41,16 +46,14 @@ func RenderUpgradeRequired(currentVersion, latestVersion string, width, height i
 	)
 
 	content += upgradeTextStyle.Render(
-		"A new version of sdexmon is available and must be installed.\n\n",
+		"Press enter to run the installer now, or upgrade manually with:\n",
 	)
-
-	content += upgradeTextStyle.Render("To upgrade, run:\n")
-	content += upgradeCommandStyle.Render(
-		"  curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash",
-	)
+	content += upgradeCommandStyle.Render("  " + upgradeCommand)
 
 	content += "\n\n"
 	content += upgradeTextStyle.Render("Or download from: https://github.com/sdexmon/sdexmon/releases/latest")
+	content += "\n\n"
+	content += upgradeHintStyle.Render("enter: upgrade now   esc: continue without upgrading   q: quit")
 
 	box := upgradeBoxStyle.Render(content)
 

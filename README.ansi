@@ -1,11 +1,11 @@
-\x1b[36m███████╗██████╗ ███████╗██╗  ██╗███╗   ███╗ ██████╗ ███╗   ██╗
+[36m███████╗██████╗ ███████╗██╗  ██╗███╗   ███╗ ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔════╝╚██╗██╔╝████╗ ████║██╔═══██╗████╗  ██║
 ███████╗██║  ██║█████╗   ╚███╔╝ ██╔████╔██║██║   ██║██╔██╗ ██║
 ╚════██║██║  ██║██╔══╝   ██╔██╗ ██║╚██╔╝██║██║   ██║██║╚██╗██║
 ███████║██████╔╝███████╗██╔╝ ██╗██║ ╚═╝ ██║╚██████╔╝██║ ╚████║
-╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝         ╚═════╝ ╚═╝  ╚═══╝\x1b[0m
-\x1b[36mSTELLAR DEX MONITORING — TERMINAL NATIVE\x1b[0m
-\x1b[90m============================================================\x1b[0m
+╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝         ╚═════╝ ╚═╝  ╚═══╝[0m
+[36mSTELLAR DEX MONITORING — TERMINAL NATIVE[0m
+[90m============================================================[0m
 
 SDEXMON is a real-time monitor for the Stellar Decentralized Exchange.
 It runs entirely in your terminal and focuses on signal, not dashboards.
@@ -14,10 +14,10 @@ No web UI.
 No accounts.
 No noise.
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[90m------------------------------------------------------------[0m
 
-\x1b[32m[ 1 ]\x1b[0m \x1b[36mOVERVIEW\x1b[0m
-\x1b[90m--------------\x1b[0m
+[32m[ 1 ][0m [36mOVERVIEW[0m
+[90m--------------[0m
 sdexmon is a Go-based TUI (terminal user interface) for observing live
 activity on the Stellar DEX.
 
@@ -29,10 +29,10 @@ It allows operators, developers, and traders to:
 
 All output is rendered directly in the terminal.
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[90m------------------------------------------------------------[0m
 
-\x1b[32m[ 2 ]\x1b[0m \x1b[36mFEATURES\x1b[0m
-\x1b[90m--------------\x1b[0m
+[32m[ 2 ][0m [36mFEATURES[0m
+[90m--------------[0m
 - Order book viewer (live bids / asks with depth)
 - Liquidity pool analytics (locked amounts, fees, volume)
 - Live trade stream (color-coded buy / sell)
@@ -40,10 +40,10 @@ All output is rendered directly in the terminal.
 - Fast, event-driven updates via Horizon RPC
 - Terminal-first UX built with Bubble Tea
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[90m------------------------------------------------------------[0m
 
-\x1b[32m[ 3 ]\x1b[0m \x1b[36mQUICKSTART\x1b[0m
-\x1b[90m----------------\x1b[0m
+[32m[ 3 ][0m [36mQUICKSTART[0m
+[90m----------------[0m
 Install and run with a single command:
 
     curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
@@ -54,10 +54,10 @@ The installer will:
 - Install into /usr/local/bin by default
 - Create a wrapper with sensible defaults
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[90m------------------------------------------------------------[0m
 
-\x1b[32m[ 4 ]\x1b[0m \x1b[36mINSTALL\x1b[0m
-\x1b[90m-------------\x1b[0m
+[32m[ 4 ][0m [36mINSTALL[0m
+[90m-------------[0m
 One-line install (recommended):
 
     curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
@@ -74,18 +74,18 @@ Manual download:
 
 Go install (requires Go toolchain):
 
-    go install github.com/sdexmon/sdexmon@latest
+    go install github.com/sdexmon/sdexmon/cmd/sdexmon@latest
 
 From source:
 
     git clone https://github.com/sdexmon/sdexmon.git
     cd sdexmon
-    go run .
+    go run ./cmd/sdexmon
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[90m------------------------------------------------------------[0m
 
-\x1b[32m[ 5 ]\x1b[0m \x1b[36mUSAGE\x1b[0m
-\x1b[90m-----------\x1b[0m
+[32m[ 5 ][0m [36mUSAGE[0m
+[90m-----------[0m
 Start the application:
 
     sdexmon
@@ -94,22 +94,47 @@ Or, when running from source:
 
     go run ./cmd/sdexmon
 
-On startup you can:
-1. View asset pairs (order books, trades, liquidity pools)
-2. View single-asset exposure across pools
+On startup the landing screen opens the pair selector, from where you can
+monitor order books, trades, liquidity pools and asset exposure.
 
 Navigation keys:
-- Up / Down : move
-- Enter     : select
-- b         : back
-- z         : toggle debug view
-- , / .     : adjust order book depth
+
+[36mLanding[0m
+- enter     : open the pair selector
+- m         : pair maintenance
+- u         : upgrade notice (only when an update is available)
 - q         : quit
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[36mPair selector[0m
+- up / down : move (k / j also work)
+- s         : search the configured pairs
+- enter     : select
+- esc       : close
 
-\x1b[32m[ 6 ]\x1b[0m \x1b[36mCONFIGURATION\x1b[0m
-\x1b[90m-------------------\x1b[0m
+[36mPair info[0m
+- p         : open the pair selector
+- d         : toggle the detail view
+- m         : pair maintenance
+- u         : upgrade notice (only when an update is available)
+- q         : quit
+
+[36mCustom pair input[0m
+- tab       : switch between the base and quote fields
+- enter     : apply
+- esc       : back
+
+[36mMaintenance[0m
+- 1 / 2 / 3 : add a pair / remove a pair / list pairs
+- esc       : back one step
+- q         : quit
+
+q and ctrl+c quit from anywhere. The one exception is a maintenance search
+field, where q types normally and ctrl+c quits.
+
+[90m------------------------------------------------------------[0m
+
+[32m[ 6 ][0m [36mCONFIGURATION[0m
+[90m-------------------[0m
 The installer creates a wrapper that sets sensible defaults.
 
 Optional environment variables:
@@ -117,17 +142,29 @@ Optional environment variables:
     # Horizon endpoint
     export HORIZON_URL="https://horizon.stellar.org"
 
-    # Start directly at a specific pair
+    # Supply the pair used by display mode
     export BASE_ASSET="native"
     export QUOTE_ASSET="USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
     # Disable debug mode
     export DEBUG="false"
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+Passive display mode:
 
-\x1b[32m[ 7 ]\x1b[0m \x1b[36mDEVELOPMENT\x1b[0m
-\x1b[90m-----------------\x1b[0m
+    # Start immediately and rotate favorite pairs every 30 seconds
+    sdexmon display --favorites-only --rotate=30s --no-update-check
+
+    # Pin the display to one configured pair
+    sdexmon display --pair XLM/USDC --rotate=0
+
+Raspberry Pi 5 and systemd setup:
+
+    docs/raspberry-pi.md
+
+[90m------------------------------------------------------------[0m
+
+[32m[ 7 ][0m [36mDEVELOPMENT[0m
+[90m-----------------[0m
 Format code:
 
     go fmt ./...
@@ -140,6 +177,14 @@ Build binary:
 
     go build -o sdexmon ./cmd/sdexmon
 
+README.ansi is generated from this file. After editing README.md, run:
+
+    make readme-gen
+
+And to verify the two have not drifted apart:
+
+    make readme-check
+
 
 Project structure:
 
@@ -148,15 +193,15 @@ Project structure:
     ├── internal/
     │   ├── models/      data structures
     │   └── config/      configuration
-    ├── go.mod
+    └── go.mod
 
-\x1b[90m------------------------------------------------------------\x1b[0m
+[90m------------------------------------------------------------[0m
 
-\x1b[32m[ 8 ]\x1b[0m \x1b[36mLINKS\x1b[0m
-\x1b[90m-----------\x1b[0m
+[32m[ 8 ][0m [36mLINKS[0m
+[90m-----------[0m
 Repository : https://github.com/sdexmon/sdexmon
 Website    : https://sdexmon.host
 Discord    : d4n13vt
 
-\x1b[90m------------------------------------------------------------\x1b[0m
-SDEXMON — monitor the DEX. trust the terminal.
+[90m------------------------------------------------------------[0m
+[36mSDEXMON — monitor the DEX. trust the terminal.[0m

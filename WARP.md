@@ -9,16 +9,22 @@ Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Fea
 - Navigation-based routing with pair selection landing page
 - Polls Horizon for order books/trades; fetches LP metrics from stellar.expert
 - Defaults to curated asset pairs, 140×60 layout, and 2–7 decimal rendering
-- **Automatic version checking**: Checks for updates on startup and forces upgrade if required
-- **Note:** Maintenance UI has been removed - pairs are now managed via code
+- **Automatic version checking**: Checks for updates on startup and shows an advisory upgrade notice with a `u: upgrade` shortcut
+- **Pair maintenance in-app**: `m` opens a maintenance screen to add, remove and list pairs, persisted to `~/.config/sdexmon/config.yaml`
+- **Trust-aware asset lookup**: assets are found by SEP-1 `stellar.toml` domain search, fuzzy stellar.expert search, or the stellar.expert Top 50, and every result shows its home domain
 
 Key files:
 - `main.go`: entire TUI (~2085 lines) containing routing, model/update/view, Horizon calls, LP fetch, key bindings
 - `run`: convenience launcher script that sets safe defaults (Horizon URL, debug mode, terminal size) and runs `go run .`
 - `install.sh`: installer script that creates wrapper for proper environment setup
 - `go.mod`: dependency manifest (Bubble Tea, Lip Gloss, Stellar Go SDK)
-- `ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
-- `MIGRATION.md`: guide for users upgrading from pre-wrapper installations
+- `docs/ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
+- `docs/MIGRATION.md`: guide for users upgrading from pre-wrapper installations
+- `cmd/sdexmon/maintenance_update.go`, `cmd/sdexmon/maintenance_view.go`: pair maintenance screen (add/remove/list)
+- `internal/stellar/toml.go`: SEP-1 `stellar.toml` resolver used by domain search
+- `internal/stellar/expert.go`: stellar.expert fuzzy asset search and Top 50 list
+- `internal/config/user_config.go`: reads and writes pairs in the YAML config
+- `docs/MAINTENANCE_MODE.md`: legacy maintenance mode notes
 - `.env`: local environment variables (not tracked in git)
 - `tui`: compiled binary
 
@@ -101,18 +107,19 @@ These environment variables are read at runtime:
 ## Architecture and data flow
 
 - Bubble Tea program in `main.go`
-  - **Routing**: State machine with 6 screens (Upgrade Required, Landing, Pair Info, Pair Debug, Pair Input, Maintenance)
+  - **Routing**: State machine with 6 screens (Landing, Pair Info, Pair Debug, Pair Input, Upgrade, Maintenance)
   - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, UI state, version info
-  - **Init**: 
-    - Checks GitHub API for latest release version
-    - If update required, forces Upgrade Required screen (blocks all navigation)
+  - **Startup**:
+    - `main()` checks the GitHub API for the latest release and passes the result into the model
+    - If a newer release exists (and not in `--display` mode), the app opens on the Upgrade screen; `esc` continues into the app
     - When base/quote are set, schedules three tickers (order book, trades, LP)
   - **Update**: Screen-based navigation state machine
-    - Upgrade Required: Shows upgrade instructions, blocks all navigation including quit
+    - Upgrade: `enter` runs the installer via `tea.ExecProcess` (the TUI quits afterwards since the binary was replaced), `esc` returns to the previous screen, `q`/`ctrl+c` always quits
     - Landing: Displays sdexmon ASCII art with version and commit info + pair selector popup
     - Pair screens: Horizon polling via `fetchOrderbookCmd`, `fetchTradesCmd`, `resolveAndFetchLPCmd`
+    - Maintenance: sub-state machine in `maintenance_update.go`; async asset search and market lookups arrive as `models.AssetSearchResultsMsg` / `models.ConfirmationDataMsg` / `models.MaintenanceErrMsg` and are routed from the top-level `Update`
   - **View**: Router switches on currentScreen to render appropriate view
-    - Upgrade Required: Centered red warning box with upgrade instructions
+    - Upgrade: Centered amber notice box with version info and upgrade instructions
     - Landing: sdexmon ASCII branding with version display (top-left)
     - All other screens: SCAR AQUILA header, subtitle, content, context-aware footer
     - Pair Info: Three panels (Order Book, Trades, Liquidity Pool) + Exposure panels
@@ -120,15 +127,22 @@ These environment variables are read at runtime:
 ## Navigation Flow
 
 ```
-./run → Landing (with Pair Selector Popup)
-         └─ Select Pair → Pair Info ⇄ Pair Debug
-         └─ Custom Input → Pair Info ⇄ Pair Debug
+./run -> Landing (with Pair Selector Popup)
+         |- Select Pair -> Pair Info <-> Pair Debug
+         |- Custom Input -> Pair Info <-> Pair Debug
+         |- m -> Maintenance -> Add / Remove / List
 ```
 
 ## UI Controls
 
+The `u: upgrade` shortcut is only shown and only active while the startup check
+found a newer release. It is available on the Landing, Pair Info, and Pair Debug
+screens.
+
 ### Landing Screen
 - `enter` (⏎): Open pair selector popup
+- `m`: Open pair maintenance
+- `u`: Open upgrade notice (only when an update is available)
 - `q`: Quit
 
 ### Pair Selector Popup (from Landing)
@@ -146,45 +160,90 @@ These environment variables are read at runtime:
 ### Pair Info
 - `p`: Open pair selector popup
 - `d`: Toggle debug detail view
+- `m`: Open pair maintenance
+- `u`: Open upgrade notice (only when an update is available)
 - `q`: Quit
 
 ### Pair Debug Detail
 - `d`: Back to pair info
+- `u`: Open upgrade notice (only when an update is available)
 - `q`: Quit
+
+### Upgrade Notice
+- `enter`: Run the installer now (app exits afterwards; restart to use the new build)
+- `esc`: Continue on the current version
+- `q`: Quit
+
+### Maintenance (from Landing or Pair Info with `m`)
+- `1`: Add asset pair (pick a search source -> pick asset A -> pick a search source -> pick asset B -> confirm)
+- `2`: Remove asset pair (pick pair -> confirm with `y`/`n`)
+- `3`: View configured pairs (read-only, `↑/↓` to scroll)
+- `esc`: Back one step, and back to Landing from the menu
+- `q`: Quit, except while a search field has focus (use `ctrl+c` there)
+
+### Asset Search Source (per asset, while adding a pair)
+- `1`: Domain search - reads `https://<domain>/.well-known/stellar.toml` (SEP-1)
+- `2`: Asset search - fuzzy stellar.expert lookup by code or name
+- `3`: stellar.expert Top 50 - most active assets on the network
+- `↑/↓`: Move the highlight, `enter`: Choose, `esc`: Back
 
 ## Trading Pairs Management
 
-**IMPORTANT:** The maintenance UI has been removed for deployment. Trading pairs are now managed by editing the `internal/models/constants.go` file directly.
+**IMPORTANT:** `~/.config/sdexmon/config.yaml` is the source of truth at runtime.
+`loadConfiguration()` builds `configuredPairs` and `liquidityPoolIDs` from its
+`pairs:` entries. The `curatedPairs` / `curatedAssets` / `fallbackLiquidityPoolIDs`
+tables in `cmd/sdexmon/main.go` are only fallbacks, used when the config fails to
+load or contains no usable pairs. `internal/models/constants.go` is **not** in the
+load path.
 
-### Adding a New Asset
+### In-app (preferred)
 
-1. Edit `internal/models/constants.go`
-2. Add to the `CuratedAssets` map:
-   ```go
-   "CODE": txnbuild.CreditAsset{Code: "CODE", Issuer: "G..."},
-   ```
-3. For native XLM, use: `txnbuild.NativeAsset{}`
-4. Find issuer addresses on stellar.expert
+Press `m` on the Landing or Pair Info screen:
+- **Add**: choose a search source for each asset, pick asset A and asset B,
+  review the market summary, then confirm. Requires network access. None of the
+  sources list native XLM, so it cannot be added this way.
+- **Remove**: pick a pair and confirm. Matching is issuer-aware and orientation
+  agnostic, so BASE/QUOTE and QUOTE/BASE both resolve to the same entry.
+- **List**: read-only view of every configured pair with issuers and pool IDs.
 
-### Adding a New Trading Pair
+Both mutations write the file and reload it immediately, so the pair selector
+updates without a restart.
 
-1. Ensure both assets exist in `CuratedAssets`
-2. Add to the `CuratedPairs` slice:
-   ```go
-   {"BASE", "QUOTE"}, // BASE/QUOTE - Description
-   ```
-3. Optionally add liquidity pool ID (both directions):
-   ```go
-   "BASE-QUOTE": "pool_id_64_hex_chars",
-   "QUOTE-BASE": "pool_id_64_hex_chars", // Same ID
-   ```
+#### Asset search sources
 
-### Removing a Trading Pair
+**IMPORTANT:** an asset code proves nothing about who issued it, so every result
+row shows its home domain and the selection and confirmation screens always spell
+out the issuer.
 
-1. Remove from `CuratedPairs` slice
-2. Remove both directions from `LiquidityPoolIDs` map
-3. Optionally remove unused assets from `CuratedAssets`
-4. Test changes by building and running
+- **Domain search (SEP-1)** is authoritative and the default. It reads
+  `https://<domain>/.well-known/stellar.toml` and lists only the `[[CURRENCIES]]`
+  that domain publishes itself. Entries with `status = "dead"`, a `code_template`
+  or a missing/invalid issuer are dropped; per-currency `toml` links are followed.
+  Only when the file cannot be fetched does it fall back to stellar.expert, and
+  then only to issuers whose home domain matches exactly.
+  Do NOT reintroduce the old behaviour of passing a domain to the fuzzy
+  `?search=` endpoint: it matches substrings and returned lookalike assets from
+  unrelated issuers.
+- **Asset search** is the fuzzy stellar.expert `?search=` lookup, for finding an
+  asset when the domain is unknown. Results are ranked by home domain presence
+  and trustline count, and the trustline count is shown as a sanity signal.
+- **Top 50** is `https://api.stellar.expert/explorer/public/asset-list/top50`,
+  a metrics-based ranking that stellar.expert explicitly does not endorse.
+
+### By hand
+
+Edit `~/.config/sdexmon/config.yaml`:
+```yaml
+pairs:
+  - name: XLM/USDC
+    base: XLM:native
+    quote: USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+    lp: a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088
+    favorite: true
+    show_decimals: 7
+```
+`base`/`quote` accept `native`, `XLM:native` or `CODE:ISSUER`. `lp` is optional;
+when omitted the pool is resolved from Horizon at runtime.
 
 ### Finding Required Data
 
@@ -194,10 +253,13 @@ These environment variables are read at runtime:
 
 ## Data Sources
 
-- **Curated data** (in `internal/models/constants.go`):
-  - `CuratedAssets`: XLM, USDZ, ZARZ, EURZ, XAUZ, BTCZ, USDC with issuer addresses
-  - `CuratedPairs`: Predefined trading pairs available in pair selector
-  - `LiquidityPoolIDs`: Static map of pool IDs for known pairs (bidirectional)
+- **User config** (`~/.config/sdexmon/config.yaml`): the pairs actually shown in
+  the selector, plus per-pair LP IDs, favourites and decimal preferences
+- **Fallback tables** (in `cmd/sdexmon/main.go`, used only when the config yields
+  no pairs):
+  - `curatedAssets`: XLM, USDZ, ZARZ, EURZ, XAUZ, BTCZ, USDC with issuer addresses
+  - `curatedPairs`: Predefined trading pairs
+  - `fallbackLiquidityPoolIDs`: Static map of pool IDs for known pairs (bidirectional)
 
 - **Rendering/layout**:
   - Fixed‑width layout designed for ~140×60
@@ -226,7 +288,10 @@ Follows standard Go project layout:
 sdexmon/
 ├── cmd/sdexmon/              # Main application
 │   ├── main.go               # Entry point (~2700 lines)
-│   └── maintenance_update.go # Maintenance mode handlers
+│   ├── maintenance_update.go # Maintenance key handling and commands
+│   ├── maintenance_view.go   # Maintenance screen renderers
+│   ├── maintenance_test.go   # Maintenance routing and removal tests
+│   └── upgrade_test.go       # Upgrade notice tests
 ├── internal/                 # Private packages
 │   ├── models/               # Data structures
 │   │   ├── types.go          # Model, ScreenState, Messages
@@ -237,13 +302,20 @@ sdexmon/
 │   │   ├── assets.go         # Asset parsing utilities
 │   │   └── user_config.go    # User configuration handling
 │   ├── ui/                   # UI components
-│   │   └── upgrade.go        # Upgrade required screen renderer
+│   │   └── upgrade.go        # Upgrade notice screen renderer
 │   ├── version/              # Version management
 │   │   ├── checker.go        # GitHub release checker
 │   │   └── checker_test.go   # Version comparison tests
 │   └── stellar/              # Stellar API helpers
 │       ├── confirmation.go   # Asset confirmation
-│       └── expert.go         # stellar.expert API client
+│       ├── expert.go         # stellar.expert search and Top 50 client
+│       ├── toml.go           # SEP-1 stellar.toml resolver (domain search)
+│       └── toml_test.go      # stellar.toml parsing and validation tests
+├── docs/                     # Project documentation
+│   ├── MAINTENANCE_MODE.md   # Legacy maintenance mode notes
+│   ├── MIGRATION.md          # Pre-wrapper upgrade guide
+│   ├── ROUTING_IMPLEMENTATION.md # Routing system documentation
+│   └── raspberry-pi.md       # Raspberry Pi deployment notes
 ├── go.mod                    # Module: github.com/sdexmon/sdexmon
 ├── go.sum                    # Dependencies
 ├── run                       # Launcher script
@@ -260,9 +332,11 @@ sdexmon/
    - Created packages (`models`, `config`) are first step
    - Further refactoring recommended but not blocking
 
-2. **No tests:** Zero test coverage
-   - No `*_test.go` files exist
-   - Testing framework not set up
+2. **Thin test coverage:** Only targeted regression tests exist
+   - Covered: upgrade notice, maintenance routing/removal, search source
+     selection, stellar.toml parsing, config pair CRUD, version comparison,
+     order book request shape, layout helpers
+   - Missing: broad view snapshots and mocked stellar.expert asset search
    - Should add: unit tests, mocked API tests, format tests
 
 ## Troubleshooting
