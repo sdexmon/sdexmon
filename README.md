@@ -4,21 +4,20 @@ This README includes an optional ANSI-colored version for terminal viewing.
 If you are reading this on GitHub, scroll down for the plain-text version.
 
 ```ansi
-\x1b[36m███████╗██████╗ ███████╗██╗  ██╗███╗   ███╗ ██████╗ ███╗   ██╗
+[36m███████╗██████╗ ███████╗██╗  ██╗███╗   ███╗ ██████╗ ███╗   ██╗
 ██╔════╝██╔══██╗██╔════╝╚██╗██╔╝████╗ ████║██╔═══██╗████╗  ██║
 ███████╗██║  ██║█████╗   ╚███╔╝ ██╔████╔██║██║   ██║██╔██╗ ██║
 ╚════██║██║  ██║██╔══╝   ██╔██╗ ██║╚██╔╝██║██║   ██║██║╚██╗██║
 ███████║██████╔╝███████╗██╔╝ ██╗██║ ╚═╝ ██║╚██████╔╝██║ ╚████║
-╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝         ╚═════╝ ╚═╝  ╚═══╝\x1b[0m
+╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝         ╚═════╝ ╚═╝  ╚═══╝[0m
 
-\x1b[36mSTELLAR DEX MONITORING — TERMINAL NATIVE\x1b[0m
-\x1b[90m------------------------------------------------------------\x1b[0m
-\x1b[32m[ 1 ]\x1b[0m \x1b[36mOVERVIEW\x1b[0m   \x1b[32m[ 2 ]\x1b[0m \x1b[36mFEATURES\x1b[0m   \x1b[32m[ 3 ]\x1b[0m \x1b[36mQUICKSTART\x1b[0m
-\x1b[32m[ 4 ]\x1b[0m \x1b[36mINSTALL\x1b[0m    \x1b[32m[ 5 ]\x1b[0m \x1b[36mUSAGE\x1b[0m      \x1b[32m[ 6 ]\x1b[0m \x1b[36mCONFIG\x1b[0m
-\x1b[32m[ 7 ]\x1b[0m \x1b[36mDEV\x1b[0m        \x1b[32m[ 8 ]\x1b[0m \x1b[36mLINKS\x1b[0m
-\x1b[90m------------------------------------------------------------\x1b[0m
-\x1b[36mTerminal view:\x1b[0m \x1b[32mless -R README.ansi\x1b[0m  \x1b[90m|\x1b[0m  \x1b[32mmake readme | less -R\x1b[0m
-\x1b[36mSDEXMON — monitor the DEX. trust the terminal.\x1b[0m
+[36mSTELLAR DEX MONITORING — TERMINAL NATIVE[0m
+[90m------------------------------------------------------------[0m
+[32m[ 1 ][0m [36mOVERVIEW[0m      [32m[ 2 ][0m [36mFEATURES[0m   [32m[ 3 ][0m [36mQUICKSTART[0m
+[32m[ 4 ][0m [36mINSTALL[0m       [32m[ 5 ][0m [36mUSAGE[0m      [32m[ 6 ][0m [36mCONFIGURATION[0m
+[32m[ 7 ][0m [36mDEVELOPMENT[0m   [32m[ 8 ][0m [36mLINKS[0m
+[90m------------------------------------------------------------[0m
+[36mTerminal view:[0m [32mless -R README.ansi[0m  [90m|[0m  [32mmake readme | less -R[0m
 ```
 
 # SDEXMON
@@ -120,17 +119,42 @@ Or, when running from source:
 
     go run ./cmd/sdexmon
 
-On startup you can:
-1. View asset pairs (order books, trades, liquidity pools)
-2. View single-asset exposure across pools
+On startup the landing screen opens the pair selector, from where you can
+monitor order books, trades, liquidity pools and asset exposure.
 
 Navigation keys:
-- Up / Down : move
-- Enter     : select
-- b         : back
-- z         : toggle debug view
-- , / .     : adjust order book depth
+
+Landing
+- enter     : open the pair selector
+- m         : pair maintenance
+- u         : upgrade notice (only when an update is available)
 - q         : quit
+
+Pair selector
+- up / down : move (k / j also work)
+- s         : search the configured pairs
+- enter     : select
+- esc       : close
+
+Pair info
+- p         : open the pair selector
+- d         : toggle the detail view
+- m         : pair maintenance
+- u         : upgrade notice (only when an update is available)
+- q         : quit
+
+Custom pair input
+- tab       : switch between the base and quote fields
+- enter     : apply
+- esc       : back
+
+Maintenance
+- 1 / 2 / 3 : add a pair / remove a pair / list pairs
+- esc       : back one step
+- q         : quit
+
+q and ctrl+c quit from anywhere. The one exception is a maintenance search
+field, where q types normally and ctrl+c quits.
 
 
 [ 6 ] CONFIGURATION
@@ -175,6 +199,14 @@ Run checks:
 Build binary:
 
     go build -o sdexmon ./cmd/sdexmon
+
+README.ansi is generated from this file. After editing README.md, run:
+
+    make readme-gen
+
+And to verify the two have not drifted apart:
+
+    make readme-check
 
 
 Project structure:
