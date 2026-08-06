@@ -22,7 +22,7 @@ func FetchPairConfirmationData(client *horizonclient.Client, assetA, assetB txnb
 
 	// Fetch order book
 	obReq := horizonclient.OrderBookRequest{}
-	
+
 	// Apply selling asset
 	if assetA.IsNative() {
 		obReq.SellingAssetType = horizonclient.AssetTypeNative

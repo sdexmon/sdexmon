@@ -53,8 +53,10 @@ Key files:
 
 - Build with version info:
   ```bash
-  go build -o sdexmon -ldflags="-X main.gitCommit=$(git rev-parse --short HEAD)" ./cmd/sdexmon
+  go build -o sdexmon -ldflags="-X main.appVersion=$(git describe --tags --always) -X main.gitCommit=$(git rev-parse --short HEAD)" ./cmd/sdexmon
   ```
+  `appVersion` and `gitCommit` default to `dev`/`unknown` for plain `go build`.
+  Release builds get real values injected by GoReleaser (see `.goreleaser.yml`).
 
 - Check version:
   ```bash
