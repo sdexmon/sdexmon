@@ -34,8 +34,9 @@ if command -v tput >/dev/null 2>&1; then
   printf '\e[8;60;140t'
 fi
 
-# Get git commit hash (short form)
+# Get git commit hash (short form) and a version derived from tags
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
-# Build with git commit injected
-exec go run -ldflags="-X main.gitCommit=${GIT_COMMIT}" ./cmd/sdexmon
+# Build with version and git commit injected
+exec go run -ldflags="-X main.appVersion=${GIT_VERSION} -X main.gitCommit=${GIT_COMMIT}" ./cmd/sdexmon

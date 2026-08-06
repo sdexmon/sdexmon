@@ -84,7 +84,10 @@ const asciiSdexmon = `                  ░██
                                                                                               
                                                                                               `
 
-var appVersion = "v0.1.0"
+// appVersion and gitCommit are injected at build time via ldflags
+// (see .goreleaser.yml and the run script). The defaults apply to plain
+// `go build`/`go run` invocations, which are unreleased development builds.
+var appVersion = "dev"
 var gitCommit = "unknown"
 
 // Curated assets and pairs (static table)
