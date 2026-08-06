@@ -86,7 +86,7 @@ func TestMaintenanceMenuRoutes(t *testing.T) {
 		key  string
 		want models.MaintenanceScreen
 	}{
-		{"1", models.AssetADomainInput},
+		{"1", models.AssetASourceSelect},
 		{"2", models.PairRemoveSelection},
 		{"3", models.PairList},
 	}
@@ -166,20 +166,135 @@ func TestDomainInputAcceptsQ(t *testing.T) {
 	withTempConfig(t, testPairs())
 
 	m := model{currentScreen: screenMaintenance, maintenanceState: initMaintenanceState()}
-	next, _ := m.Update(keyMsg("1"))
-	m = next.(model)
+	for _, key := range []string{"1", "1"} { // add pair -> domain search
+		next, _ := m.Update(keyMsg(key))
+		m = next.(model)
+	}
+	if m.maintenanceState.Screen != models.AssetAQueryInput {
+		t.Fatalf("domain search should open the query field, got screen %d", m.maintenanceState.Screen)
+	}
 
 	next, cmd := m.Update(keyMsg("q"))
 	if quits(cmd) {
 		t.Fatal("q while typing a domain must not quit the app")
 	}
-	if got := next.(model).maintenanceState.DomainInputA.Value(); got != "q" {
+	if got := next.(model).maintenanceState.QueryInputA.Value(); got != "q" {
 		t.Fatalf("domain input = %q, want %q", got, "q")
 	}
 
 	// ctrl+c must still be an unconditional escape hatch.
 	if _, cmd := next.(model).Update(tea.KeyMsg{Type: tea.KeyCtrlC}); !quits(cmd) {
 		t.Error("ctrl+c must always quit, even while typing")
+	}
+}
+
+// TestSearchSourceSelection covers the three ways an asset can be looked up.
+// The domain and code sources prompt for a query; the top 50 list must not.
+func TestSearchSourceSelection(t *testing.T) {
+	withTempConfig(t, testPairs())
+
+	cases := []struct {
+		key        string
+		wantMode   models.AssetSearchMode
+		wantScreen models.MaintenanceScreen
+		wantPrompt string
+	}{
+		{"1", models.SearchByDomain, models.AssetAQueryInput, "Domain > "},
+		{"2", models.SearchByCode, models.AssetAQueryInput, "Asset > "},
+		{"3", models.SearchTop50, models.AssetASourceSelect, ""},
+	}
+
+	for _, tc := range cases {
+		m := model{currentScreen: screenMaintenance, maintenanceState: initMaintenanceState()}
+		next, _ := m.Update(keyMsg("1"))
+		m = next.(model)
+
+		next, cmd := m.Update(keyMsg(tc.key))
+		m = next.(model)
+
+		if m.maintenanceState.SearchModeA != tc.wantMode {
+			t.Errorf("source key %q selected mode %d, want %d", tc.key, m.maintenanceState.SearchModeA, tc.wantMode)
+		}
+		if m.maintenanceState.Screen != tc.wantScreen {
+			t.Errorf("source key %q went to screen %d, want %d", tc.key, m.maintenanceState.Screen, tc.wantScreen)
+		}
+		if tc.wantPrompt != "" {
+			if got := m.maintenanceState.QueryInputA.Prompt; got != tc.wantPrompt {
+				t.Errorf("source key %q prompt = %q, want %q", tc.key, got, tc.wantPrompt)
+			}
+			continue
+		}
+		if cmd == nil {
+			t.Errorf("source key %q should start the lookup immediately", tc.key)
+		}
+		if m.maintenanceState.LoadingMessage == "" {
+			t.Errorf("source key %q should report that it is loading", tc.key)
+		}
+	}
+}
+
+// TestSearchResultsShowHomeDomain is the regression for domain search offering
+// lookalike assets: whichever source is used, every row names the home domain
+// so an unrelated issuer is obvious.
+func TestSearchResultsShowHomeDomain(t *testing.T) {
+	withTempConfig(t, testPairs())
+
+	m := model{currentScreen: screenMaintenance, maintenanceState: initMaintenanceState()}
+	for _, key := range []string{"1", "1"} {
+		next, _ := m.Update(keyMsg(key))
+		m = next.(model)
+	}
+
+	next, _ := m.Update(models.AssetSearchResultsMsg{
+		Leg:    models.AssetLegA,
+		Source: "https://zeam.money/.well-known/stellar.toml (SEP-1 verified)",
+		Assets: []models.AssetSearchResult{{
+			Code:     "ZARZ",
+			Issuer:   "GAROH4EV3WVVTRQKEY43GZK3XSRBEYETRVZ7SVG5LHWOAANSMCTJBB3U",
+			Domain:   "zeam.money",
+			Name:     "zeam ZAR",
+			Verified: true,
+		}},
+	})
+	m = next.(model)
+
+	if m.maintenanceState.Screen != models.AssetASelection {
+		t.Fatalf("results should open the selection screen, got %d", m.maintenanceState.Screen)
+	}
+
+	view := m.View()
+	for _, want := range []string{"zeam.money", "HOME DOMAIN", "stellar.toml"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("selection view is missing %q", want)
+		}
+	}
+}
+
+// TestLateResultsDoNotHijackScreen guards against a slow search dragging the
+// user back into a list they already navigated away from.
+func TestLateResultsDoNotHijackScreen(t *testing.T) {
+	withTempConfig(t, testPairs())
+
+	m := model{currentScreen: screenMaintenance, maintenanceState: initMaintenanceState()}
+	for _, key := range []string{"1", "1", "esc", "esc"} {
+		next, _ := m.Update(keyMsg(key))
+		m = next.(model)
+	}
+	if m.maintenanceState.Screen != models.MaintenanceMenu {
+		t.Fatalf("expected to be back on the menu, got screen %d", m.maintenanceState.Screen)
+	}
+
+	next, _ := m.Update(models.AssetSearchResultsMsg{
+		Leg: models.AssetLegA,
+		Assets: []models.AssetSearchResult{{
+			Code:   "ZARZ",
+			Issuer: "GAROH4EV3WVVTRQKEY43GZK3XSRBEYETRVZ7SVG5LHWOAANSMCTJBB3U",
+			Domain: "zeam.money",
+		}},
+	})
+
+	if got := next.(model).maintenanceState.Screen; got != models.MaintenanceMenu {
+		t.Errorf("late results moved the user to screen %d, want the menu", got)
 	}
 }
 
