@@ -46,6 +46,12 @@ func handleMaintenanceUpdate(m model, msg tea.Msg) (model, tea.Cmd) {
 			return handleAssetBSelectionKeys(m, msg)
 		case models.PairConfirmation:
 			return handleConfirmationKeys(m, msg)
+		case models.PairRemoveSelection:
+			return handlePairRemoveSelectionKeys(m, msg)
+		case models.PairRemoveConfirmation:
+			return handlePairRemoveConfirmationKeys(m, msg)
+		case models.PairList:
+			return handlePairListKeys(m, msg)
 		}
 
 	case models.AssetSearchResultsMsg:
@@ -79,7 +85,7 @@ func handleMaintenanceUpdate(m model, msg tea.Msg) (model, tea.Cmd) {
 
 func handleMaintenanceMenuKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q":
+	case "esc":
 		m.currentScreen = screenLanding
 		m.maintenanceState = initMaintenanceState()
 		return m, nil
@@ -88,9 +94,128 @@ func handleMaintenanceMenuKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 		m.maintenanceState.Screen = models.AssetADomainInput
 		m.maintenanceState.DomainInputA.Focus()
 		m.maintenanceState.ErrorMessage = ""
+		m.maintenanceState.StatusMessage = ""
+		return m, nil
+	case "2":
+		// Start remove asset pair flow
+		m.maintenanceState.Screen = models.PairRemoveSelection
+		m.maintenanceState.PairCursor = 0
+		m.maintenanceState.ErrorMessage = ""
+		m.maintenanceState.StatusMessage = ""
+		return m, nil
+	case "3":
+		// Show the configured pairs read-only
+		m.maintenanceState.Screen = models.PairList
+		m.maintenanceState.PairCursor = 0
+		m.maintenanceState.ErrorMessage = ""
+		m.maintenanceState.StatusMessage = ""
 		return m, nil
 	}
 	return m, nil
+}
+
+func handlePairRemoveSelectionKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.maintenanceState.Screen = models.MaintenanceMenu
+		m.maintenanceState.ErrorMessage = ""
+		return m, nil
+	case "up", "k":
+		if m.maintenanceState.PairCursor > 0 {
+			m.maintenanceState.PairCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.maintenanceState.PairCursor < len(configuredPairs)-1 {
+			m.maintenanceState.PairCursor++
+		}
+		return m, nil
+	case "enter":
+		if _, ok := maintenancePairAt(m.maintenanceState.PairCursor); !ok {
+			return m, nil
+		}
+		m.maintenanceState.Screen = models.PairRemoveConfirmation
+		m.maintenanceState.ErrorMessage = ""
+		return m, nil
+	}
+	return m, nil
+}
+
+func handlePairRemoveConfirmationKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n":
+		m.maintenanceState.Screen = models.PairRemoveSelection
+		m.maintenanceState.ErrorMessage = ""
+		return m, nil
+	case "enter", "y":
+		pair, ok := maintenancePairAt(m.maintenanceState.PairCursor)
+		if !ok {
+			m.maintenanceState.Screen = models.PairRemoveSelection
+			return m, nil
+		}
+		base, quote, ok := assetsForPair(pair)
+		if !ok {
+			m.maintenanceState.ErrorMessage = "Pair has unresolved assets and cannot be removed"
+			return m, nil
+		}
+		if err := config.RemoveCustomPair(base, quote); err != nil {
+			m.maintenanceState.ErrorMessage = fmt.Sprintf("Failed to remove: %v", err)
+			return m, nil
+		}
+
+		label := pairLabel(pair)
+		m = reloadPairsAfterMaintenance(m)
+		m.maintenanceState.Screen = models.MaintenanceMenu
+		m.maintenanceState.PairCursor = 0
+		m.maintenanceState.StatusMessage = fmt.Sprintf("Removed pair %s", label)
+		m.status = fmt.Sprintf("Removed pair %s", label)
+		return m, nil
+	}
+	return m, nil
+}
+
+func handlePairListKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.maintenanceState.Screen = models.MaintenanceMenu
+		return m, nil
+	case "up", "k":
+		if m.maintenanceState.PairCursor > 0 {
+			m.maintenanceState.PairCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.maintenanceState.PairCursor < len(configuredPairs)-1 {
+			m.maintenanceState.PairCursor++
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// maintenancePairAt returns the configured pair at index, guarding against a
+// cursor left over from a longer list.
+func maintenancePairAt(index int) (pairOption, bool) {
+	if index < 0 || index >= len(configuredPairs) {
+		return pairOption{}, false
+	}
+	return configuredPairs[index], true
+}
+
+// reloadPairsAfterMaintenance re-reads the config file so the pair selector
+// reflects the change immediately, and keeps dependent indexes in range.
+func reloadPairsAfterMaintenance(m model) model {
+	if err := loadConfiguration(); err != nil {
+		m.maintenanceState.ErrorMessage = fmt.Sprintf("Saved, but reload failed: %v", err)
+	}
+	m.filteredPairs = configuredPairs
+	if m.pairIndex >= len(configuredPairs) {
+		m.pairIndex = 0
+	}
+	if m.maintenanceState.PairCursor >= len(configuredPairs) {
+		m.maintenanceState.PairCursor = 0
+	}
+	return m
 }
 
 func handleAssetADomainInputKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
@@ -229,15 +354,13 @@ func handleConfirmationKeys(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Success! Reload config and return to landing
+		// Success! Reload config and return to the menu so several pairs can be
+		// maintained in one visit.
+		label := fmt.Sprintf("%s/%s", cd.AssetA.GetCode(), cd.AssetB.GetCode())
 		m.maintenanceState = initMaintenanceState()
-		m.currentScreen = screenLanding
-		m.status = fmt.Sprintf("Added pair %s/%s", cd.AssetA.GetCode(), cd.AssetB.GetCode())
-
-		if err := loadConfiguration(); err != nil {
-			m.maintenanceState.ErrorMessage = fmt.Sprintf("Saved, but reload failed: %v", err)
-		}
-		m.filteredPairs = configuredPairs
+		m = reloadPairsAfterMaintenance(m)
+		m.maintenanceState.StatusMessage = fmt.Sprintf("Added pair %s", label)
+		m.status = fmt.Sprintf("Added pair %s", label)
 		return m, nil
 	}
 	return m, nil

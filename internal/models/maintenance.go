@@ -15,6 +15,9 @@ const (
 	AssetBDomainInput
 	AssetBSelection
 	PairConfirmation
+	PairRemoveSelection
+	PairRemoveConfirmation
+	PairList
 )
 
 // StellarExpertAsset represents an asset from stellar.expert API
@@ -50,8 +53,18 @@ type MaintenanceState struct {
 	AssetCursorA     int
 	AssetCursorB     int
 	ConfirmationData *PairConfirmationData
-	LoadingMessage   string
-	ErrorMessage     string
+	// PairCursor is the highlighted row on the remove and list screens.
+	PairCursor     int
+	LoadingMessage string
+	StatusMessage  string
+	ErrorMessage   string
+}
+
+// AcceptsTextInput reports whether the current maintenance screen is typing
+// into a text field. Single-letter global shortcuts must stand down while it
+// is true, otherwise domains containing those letters cannot be entered.
+func (s MaintenanceState) AcceptsTextInput() bool {
+	return s.Screen == AssetADomainInput || s.Screen == AssetBDomainInput
 }
 
 // Messages for maintenance mode
