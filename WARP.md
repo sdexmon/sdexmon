@@ -11,6 +11,7 @@ Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Fea
 - Defaults to curated asset pairs, 140×60 layout, and 2–7 decimal rendering
 - **Automatic version checking**: Checks for updates on startup and shows an advisory upgrade notice with a `u: upgrade` shortcut
 - **Pair maintenance in-app**: `m` opens a maintenance screen to add, remove and list pairs, persisted to `~/.config/sdexmon/config.yaml`
+- **Trust-aware asset lookup**: assets are found by SEP-1 `stellar.toml` domain search, fuzzy stellar.expert search, or the stellar.expert Top 50, and every result shows its home domain
 
 Key files:
 - `main.go`: entire TUI (~2085 lines) containing routing, model/update/view, Horizon calls, LP fetch, key bindings
@@ -20,6 +21,8 @@ Key files:
 - `docs/ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
 - `docs/MIGRATION.md`: guide for users upgrading from pre-wrapper installations
 - `cmd/sdexmon/maintenance_update.go`, `cmd/sdexmon/maintenance_view.go`: pair maintenance screen (add/remove/list)
+- `internal/stellar/toml.go`: SEP-1 `stellar.toml` resolver used by domain search
+- `internal/stellar/expert.go`: stellar.expert fuzzy asset search and Top 50 list
 - `internal/config/user_config.go`: reads and writes pairs in the YAML config
 - `docs/MAINTENANCE_MODE.md`: legacy maintenance mode notes
 - `.env`: local environment variables (not tracked in git)
@@ -172,11 +175,17 @@ screens.
 - `q`: Quit
 
 ### Maintenance (from Landing or Pair Info with `m`)
-- `1`: Add asset pair (domain search -> pick asset A -> pick asset B -> confirm)
+- `1`: Add asset pair (pick a search source -> pick asset A -> pick a search source -> pick asset B -> confirm)
 - `2`: Remove asset pair (pick pair -> confirm with `y`/`n`)
 - `3`: View configured pairs (read-only, `↑/↓` to scroll)
 - `esc`: Back one step, and back to Landing from the menu
-- `q`: Quit, except while a domain field has focus (use `ctrl+c` there)
+- `q`: Quit, except while a search field has focus (use `ctrl+c` there)
+
+### Asset Search Source (per asset, while adding a pair)
+- `1`: Domain search - reads `https://<domain>/.well-known/stellar.toml` (SEP-1)
+- `2`: Asset search - fuzzy stellar.expert lookup by code or name
+- `3`: stellar.expert Top 50 - most active assets on the network
+- `↑/↓`: Move the highlight, `enter`: Choose, `esc`: Back
 
 ## Trading Pairs Management
 
@@ -190,16 +199,36 @@ load path.
 ### In-app (preferred)
 
 Press `m` on the Landing or Pair Info screen:
-- **Add**: enter a domain, pick asset A and asset B from the stellar.expert
-  results, review the market summary, then confirm. Requires network access, and
-  only finds assets published under a home domain, so native XLM cannot be added
-  this way.
+- **Add**: choose a search source for each asset, pick asset A and asset B,
+  review the market summary, then confirm. Requires network access. None of the
+  sources list native XLM, so it cannot be added this way.
 - **Remove**: pick a pair and confirm. Matching is issuer-aware and orientation
   agnostic, so BASE/QUOTE and QUOTE/BASE both resolve to the same entry.
 - **List**: read-only view of every configured pair with issuers and pool IDs.
 
 Both mutations write the file and reload it immediately, so the pair selector
 updates without a restart.
+
+#### Asset search sources
+
+**IMPORTANT:** an asset code proves nothing about who issued it, so every result
+row shows its home domain and the selection and confirmation screens always spell
+out the issuer.
+
+- **Domain search (SEP-1)** is authoritative and the default. It reads
+  `https://<domain>/.well-known/stellar.toml` and lists only the `[[CURRENCIES]]`
+  that domain publishes itself. Entries with `status = "dead"`, a `code_template`
+  or a missing/invalid issuer are dropped; per-currency `toml` links are followed.
+  Only when the file cannot be fetched does it fall back to stellar.expert, and
+  then only to issuers whose home domain matches exactly.
+  Do NOT reintroduce the old behaviour of passing a domain to the fuzzy
+  `?search=` endpoint: it matches substrings and returned lookalike assets from
+  unrelated issuers.
+- **Asset search** is the fuzzy stellar.expert `?search=` lookup, for finding an
+  asset when the domain is unknown. Results are ranked by home domain presence
+  and trustline count, and the trustline count is shown as a sanity signal.
+- **Top 50** is `https://api.stellar.expert/explorer/public/asset-list/top50`,
+  a metrics-based ranking that stellar.expert explicitly does not endorse.
 
 ### By hand
 
@@ -279,7 +308,9 @@ sdexmon/
 │   │   └── checker_test.go   # Version comparison tests
 │   └── stellar/              # Stellar API helpers
 │       ├── confirmation.go   # Asset confirmation
-│       └── expert.go         # stellar.expert API client
+│       ├── expert.go         # stellar.expert search and Top 50 client
+│       ├── toml.go           # SEP-1 stellar.toml resolver (domain search)
+│       └── toml_test.go      # stellar.toml parsing and validation tests
 ├── docs/                     # Project documentation
 │   ├── MAINTENANCE_MODE.md   # Legacy maintenance mode notes
 │   ├── MIGRATION.md          # Pre-wrapper upgrade guide
@@ -302,8 +333,9 @@ sdexmon/
    - Further refactoring recommended but not blocking
 
 2. **Thin test coverage:** Only targeted regression tests exist
-   - Covered: upgrade notice, maintenance routing/removal, config pair CRUD,
-     version comparison, order book request shape, layout helpers
+   - Covered: upgrade notice, maintenance routing/removal, search source
+     selection, stellar.toml parsing, config pair CRUD, version comparison,
+     order book request shape, layout helpers
    - Missing: broad view snapshots and mocked stellar.expert asset search
    - Should add: unit tests, mocked API tests, format tests
 
