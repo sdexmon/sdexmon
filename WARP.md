@@ -9,7 +9,7 @@ Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Fea
 - Navigation-based routing with pair selection landing page
 - Polls Horizon for order books/trades; fetches LP metrics from stellar.expert
 - Defaults to curated asset pairs, 140×60 layout, and 2–7 decimal rendering
-- **Automatic version checking**: Checks for updates on startup and forces upgrade if required
+- **Automatic version checking**: Checks for updates on startup and shows an advisory upgrade notice with a `u: upgrade` shortcut
 - **Note:** Maintenance UI has been removed - pairs are now managed via code
 
 Key files:
@@ -17,8 +17,9 @@ Key files:
 - `run`: convenience launcher script that sets safe defaults (Horizon URL, debug mode, terminal size) and runs `go run .`
 - `install.sh`: installer script that creates wrapper for proper environment setup
 - `go.mod`: dependency manifest (Bubble Tea, Lip Gloss, Stellar Go SDK)
-- `ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
-- `MIGRATION.md`: guide for users upgrading from pre-wrapper installations
+- `docs/ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
+- `docs/MIGRATION.md`: guide for users upgrading from pre-wrapper installations
+- `docs/MAINTENANCE_MODE.md`: legacy maintenance mode notes
 - `.env`: local environment variables (not tracked in git)
 - `tui`: compiled binary
 
@@ -101,18 +102,18 @@ These environment variables are read at runtime:
 ## Architecture and data flow
 
 - Bubble Tea program in `main.go`
-  - **Routing**: State machine with 6 screens (Upgrade Required, Landing, Pair Info, Pair Debug, Pair Input, Maintenance)
+  - **Routing**: State machine with 5 screens (Landing, Pair Info, Pair Debug, Pair Input, Upgrade)
   - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, UI state, version info
-  - **Init**: 
-    - Checks GitHub API for latest release version
-    - If update required, forces Upgrade Required screen (blocks all navigation)
+  - **Startup**:
+    - `main()` checks the GitHub API for the latest release and passes the result into the model
+    - If a newer release exists (and not in `--display` mode), the app opens on the Upgrade screen; `esc` continues into the app
     - When base/quote are set, schedules three tickers (order book, trades, LP)
   - **Update**: Screen-based navigation state machine
-    - Upgrade Required: Shows upgrade instructions, blocks all navigation including quit
+    - Upgrade: `enter` runs the installer via `tea.ExecProcess` (the TUI quits afterwards since the binary was replaced), `esc` returns to the previous screen, `q`/`ctrl+c` always quits
     - Landing: Displays sdexmon ASCII art with version and commit info + pair selector popup
     - Pair screens: Horizon polling via `fetchOrderbookCmd`, `fetchTradesCmd`, `resolveAndFetchLPCmd`
   - **View**: Router switches on currentScreen to render appropriate view
-    - Upgrade Required: Centered red warning box with upgrade instructions
+    - Upgrade: Centered amber notice box with version info and upgrade instructions
     - Landing: sdexmon ASCII branding with version display (top-left)
     - All other screens: SCAR AQUILA header, subtitle, content, context-aware footer
     - Pair Info: Three panels (Order Book, Trades, Liquidity Pool) + Exposure panels
@@ -127,8 +128,13 @@ These environment variables are read at runtime:
 
 ## UI Controls
 
+The `u: upgrade` shortcut is only shown and only active while the startup check
+found a newer release. It is available on the Landing, Pair Info, and Pair Debug
+screens.
+
 ### Landing Screen
 - `enter` (⏎): Open pair selector popup
+- `u`: Open upgrade notice (only when an update is available)
 - `q`: Quit
 
 ### Pair Selector Popup (from Landing)
@@ -146,10 +152,17 @@ These environment variables are read at runtime:
 ### Pair Info
 - `p`: Open pair selector popup
 - `d`: Toggle debug detail view
+- `u`: Open upgrade notice (only when an update is available)
 - `q`: Quit
 
 ### Pair Debug Detail
 - `d`: Back to pair info
+- `u`: Open upgrade notice (only when an update is available)
+- `q`: Quit
+
+### Upgrade Notice
+- `enter`: Run the installer now (app exits afterwards; restart to use the new build)
+- `esc`: Continue on the current version
 - `q`: Quit
 
 ## Trading Pairs Management
@@ -237,13 +250,18 @@ sdexmon/
 │   │   ├── assets.go         # Asset parsing utilities
 │   │   └── user_config.go    # User configuration handling
 │   ├── ui/                   # UI components
-│   │   └── upgrade.go        # Upgrade required screen renderer
+│   │   └── upgrade.go        # Upgrade notice screen renderer
 │   ├── version/              # Version management
 │   │   ├── checker.go        # GitHub release checker
 │   │   └── checker_test.go   # Version comparison tests
 │   └── stellar/              # Stellar API helpers
 │       ├── confirmation.go   # Asset confirmation
 │       └── expert.go         # stellar.expert API client
+├── docs/                     # Project documentation
+│   ├── MAINTENANCE_MODE.md   # Legacy maintenance mode notes
+│   ├── MIGRATION.md          # Pre-wrapper upgrade guide
+│   ├── ROUTING_IMPLEMENTATION.md # Routing system documentation
+│   └── raspberry-pi.md       # Raspberry Pi deployment notes
 ├── go.mod                    # Module: github.com/sdexmon/sdexmon
 ├── go.sum                    # Dependencies
 ├── run                       # Launcher script
