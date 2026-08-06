@@ -62,8 +62,9 @@ const (
 	screenLanding screenState = iota
 	screenPairInfo
 	screenPairDebug
-	screenPairInput // custom pair input screen
-	screenUpgrade   // advisory update notice with upgrade instructions
+	screenPairInput   // custom pair input screen
+	screenUpgrade     // advisory update notice with upgrade instructions
+	screenMaintenance // add, remove and list configured pairs
 )
 
 // upgradeCommand is the documented one-liner installer, also shown on the
@@ -372,13 +373,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Global quit. The upgrade notice is advisory, so quitting always works
-		// and an outdated build can never trap the user.
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
+		// and an outdated build can never trap the user. "q" stands down while a
+		// maintenance text field has focus, otherwise domains containing a "q"
+		// could not be typed.
+		typingInMaintenance := m.currentScreen == screenMaintenance && m.maintenanceState.AcceptsTextInput()
+		if msg.String() == "ctrl+c" || (msg.String() == "q" && !typingInMaintenance) {
 			return m, tea.Quit
 		}
 
 		// Screen-specific navigation
 		switch m.currentScreen {
+		case screenMaintenance:
+			return handleMaintenanceUpdate(m, msg)
 		case screenUpgrade:
 			switch msg.String() {
 			case "enter":
@@ -503,6 +509,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPairPopup = true
 				m.pairIndex = currentPairIndex(m.base, m.quote)
 				return m, nil
+			case "m":
+				return m.openMaintenance(), nil
 			case "u":
 				return m.openUpgradeNotice(), nil
 			}
@@ -667,6 +675,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "d":
 				m.currentScreen = screenPairDebug
 				return m, nil
+			case "m":
+				return m.openMaintenance(), nil
 			case "u":
 				return m.openUpgradeNotice(), nil
 			}
@@ -782,12 +792,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The running binary has just been replaced, so a restart is required.
 		upgradeRan = true
 		return m, tea.Quit
+	case models.AssetSearchResultsMsg, models.ConfirmationDataMsg, models.MaintenanceErrMsg:
+		// Async results of the maintenance flow, delivered regardless of which
+		// screen is showing.
+		return handleMaintenanceUpdate(m, msg)
 	case errMsg:
 		m.err = msg
 		return m, nil
 	}
 
 	return m, nil
+}
+
+// openMaintenance switches to the pair maintenance screen with a clean state,
+// so a previous visit cannot leave a stale cursor or error behind.
+func (m model) openMaintenance() model {
+	m.currentScreen = screenMaintenance
+	m.maintenanceState = initMaintenanceState()
+	return m
 }
 
 // openUpgradeNotice switches to the upgrade notice, remembering the current
@@ -825,6 +847,8 @@ func (m model) View() string {
 		return pairInfoView(m)
 	case screenPairDebug:
 		return pairDebugView(m)
+	case screenMaintenance:
+		return maintenanceView(m)
 	default:
 		return landingView(m)
 	}
@@ -2177,7 +2201,7 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "enter: pairs  q: quit"
+			shortcuts = "enter: pairs  m: maintain  q: quit"
 		}
 	case screenPairInfo:
 		if m.showPairPopup {
@@ -2187,7 +2211,7 @@ func (m model) bottomLine() string {
 				shortcuts = "↑/↓: navigate  enter: select  s: search  esc: close  q: quit"
 			}
 		} else {
-			shortcuts = "p: pairs  d: detail  q: quit"
+			shortcuts = "p: pairs  d: detail  m: maintain  q: quit"
 		}
 	case screenPairDebug:
 		shortcuts = "d: back  q: quit"
@@ -2195,6 +2219,8 @@ func (m model) bottomLine() string {
 		shortcuts = "enter: apply  tab: switch field  esc: back  q: quit"
 	case screenUpgrade:
 		shortcuts = "enter: run installer  esc: back  q: quit"
+	case screenMaintenance:
+		shortcuts = maintenanceShortcuts(m.maintenanceState.Screen)
 	default:
 		shortcuts = "q: quit"
 	}
