@@ -143,23 +143,26 @@ Pair info
 - u         : upgrade notice (only when an update is available)
 - q         : quit
 
-Custom pair input
-- tab       : switch between the base and quote fields
-- enter     : apply
-- esc       : back
-
 Maintenance
 - 1 / 2 / 3 : add a pair / remove a pair / list pairs
 - esc       : back one step
 - q         : quit
 
-q and ctrl+c quit from anywhere. The one exception is a maintenance search
+q and ctrl+c quit from anywhere. The one exception is a maintenance text
 field, where q types normally and ctrl+c quits.
+
+Full key reference:
+
+    docs/guide/usage.md
 
 
 [ 6 ] CONFIGURATION
 -------------------
-The installer creates a wrapper that sets sensible defaults.
+The installer creates a wrapper that sets HORIZON_URL and DEBUG=false. Both
+can be overridden from your shell.
+
+Trading pairs live in ~/.config/sdexmon/config.yaml. Press m in the app to
+add, remove or list them.
 
 Optional environment variables:
 
@@ -170,8 +173,8 @@ Optional environment variables:
     export BASE_ASSET="native"
     export QUOTE_ASSET="USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
-    # Disable debug mode
-    export DEBUG="false"
+    # Enable debug mode
+    export DEBUG="true"
 
 Passive display mode:
 
@@ -181,24 +184,29 @@ Passive display mode:
     # Pin the display to one configured pair
     sdexmon display --pair XLM/USDC --rotate=0
 
+Full configuration reference:
+
+    docs/guide/configuration.md
+
 Raspberry Pi 5 and systemd setup:
 
-    docs/raspberry-pi.md
+    docs/deployment/raspberry-pi.md
 
 
 [ 7 ] DEVELOPMENT
 -----------------
 Format code:
 
-    go fmt ./...
+    make fmt
 
 Run checks:
 
-    go vet ./...
+    make vet
+    make test
 
 Build binary:
 
-    go build -o sdexmon ./cmd/sdexmon
+    make build
 
 README.ansi is generated from this file. After editing README.md, run:
 
@@ -212,18 +220,29 @@ And to verify the two have not drifted apart:
 Project structure:
 
     sdexmon/
-    ├── cmd/sdexmon/      main application
+    ├── cmd/sdexmon/     entry point, model, views, Horizon calls
     ├── internal/
-    │   ├── models/      data structures
-    │   └── config/      configuration
+    │   ├── config/      YAML config, asset parsing, pair CRUD
+    │   ├── models/      maintenance state machine types
+    │   ├── stellar/     stellar.toml and stellar.expert clients
+    │   ├── ui/          upgrade notice renderer
+    │   └── version/     GitHub release check
+    ├── docs/            documentation
+    ├── packaging/       systemd unit
     └── go.mod
+
+Full developer documentation:
+
+    docs/development/building-and-testing.md
+    docs/architecture/overview.md
 
 
 [ 8 ] LINKS
 -----------
-Repository : https://github.com/sdexmon/sdexmon
-Website    : https://sdexmon.host
-Discord    : d4n13vt
+Repository    : https://github.com/sdexmon/sdexmon
+Documentation : docs/README.md
+Website       : https://sdexmon.host
+Discord       : d4n13vt
 
 ------------------------------------------------------------
 SDEXMON — monitor the DEX. trust the terminal.
