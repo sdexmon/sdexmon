@@ -1,407 +1,257 @@
 # WARP.md
 
-This file provides guidance to WARP (warp.dev) when working with code in this repository.
+Guidance for WARP (warp.dev) when working in this repository.
+
+Detailed documentation lives in `docs/`. This file is the orientation layer plus
+the things that are easy to get wrong. When they disagree, the code wins, and
+whichever document was wrong should be fixed.
 
 ## Overview
 
-Terminal UI (Go, Bubble Tea/Lip Gloss) for visualizing Stellar spot markets. Features:
-- Asset pair monitoring: order books, trades, and liquidity pools
-- Navigation-based routing with pair selection landing page
-- Polls Horizon for order books/trades; fetches LP metrics from stellar.expert
-- Defaults to curated asset pairs, 140×60 layout, and 2–7 decimal rendering
-- **Automatic version checking**: Checks for updates on startup and shows an advisory upgrade notice with a `u: upgrade` shortcut
-- **Pair maintenance in-app**: `m` opens a maintenance screen to add, remove and list pairs, persisted to `~/.config/sdexmon/config.yaml`
-- **Trust-aware asset lookup**: assets are found by SEP-1 `stellar.toml` domain search, fuzzy stellar.expert search, or the stellar.expert Top 50, and every result shows its home domain
+SDEXMON is a terminal UI (Go, Bubble Tea, Lip Gloss) for monitoring Stellar spot
+markets. It is read-only: it submits no transactions and holds no keys.
 
-Key files:
-- `main.go`: entire TUI (~2085 lines) containing routing, model/update/view, Horizon calls, LP fetch, key bindings
-- `run`: convenience launcher script that sets safe defaults (Horizon URL, debug mode, terminal size) and runs `go run .`
-- `install.sh`: installer script that creates wrapper for proper environment setup
-- `go.mod`: dependency manifest (Bubble Tea, Lip Gloss, Stellar Go SDK)
-- `docs/ROUTING_IMPLEMENTATION.md`: detailed routing system documentation
-- `docs/MIGRATION.md`: guide for users upgrading from pre-wrapper installations
-- `cmd/sdexmon/maintenance_update.go`, `cmd/sdexmon/maintenance_view.go`: pair maintenance screen (add/remove/list)
-- `internal/stellar/toml.go`: SEP-1 `stellar.toml` resolver used by domain search
-- `internal/stellar/expert.go`: stellar.expert fuzzy asset search and Top 50 list
-- `internal/config/user_config.go`: reads and writes pairs in the YAML config
-- `docs/MAINTENANCE_MODE.md`: legacy maintenance mode notes
-- `.env`: local environment variables (not tracked in git)
-- `tui`: compiled binary
+Module path: `github.com/sdexmon/sdexmon`
+
+Capabilities:
+
+- Live order books, trades, and liquidity pool metrics for a selected pair.
+- Liquidity pool exposure panels for both sides of the pair.
+- A pair selector popup with search, over pairs from the user's config file.
+- In-app pair maintenance: add, remove and list, with trust-aware asset lookup
+  via SEP-1 `stellar.toml`, fuzzy stellar.expert search, or the Top 50 list.
+- A startup release check with an advisory upgrade notice and in-app upgrade.
+- An unattended `display` mode with pair rotation, for kiosk boards.
 
 ## Commands
 
-- Quick start (recommended for development):
-  ```bash
-  ./run
-  ```
-  Sets `HORIZON_URL` to public Stellar Horizon, enables debug, adjusts terminal size, and executes `go run .`.
+```bash
+./run                    # dev launcher: .env, DEBUG=true, 140x60, version flags
+go run ./cmd/sdexmon     # without the launcher
 
-- Install for production use:
-  ```bash
-  curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
-  ```
-  Installs binary as `.sdexmon-bin` and creates wrapper script `sdexmon` that:
-  - Sets `DEBUG=true` by default
-  - Configures optimal terminal size (140×60)
-  - Sets default Horizon URL
-  - Runs the actual binary
+make build               # go build -o sdexmon ./cmd/sdexmon
+make fmt                 # go fmt ./...
+make vet                 # go vet ./...
+make test                # go test ./...
+make readme-gen          # regenerate README.ansi from README.md
+make readme-check        # fail if README.ansi has drifted
 
-- Run without the helper script:
-  ```bash
-  go run .
-  ```
-
-- Build binary:
-  ```bash
-  go build -o sdexmon ./cmd/sdexmon
-  ```
-  Then run with `./sdexmon`.
-
-- Build with version info:
-  ```bash
-  go build -o sdexmon -ldflags="-X main.appVersion=$(git describe --tags --always) -X main.gitCommit=$(git rev-parse --short HEAD)" ./cmd/sdexmon
-  ```
-  `appVersion` and `gitCommit` default to `dev`/`unknown` for plain `go build`.
-  Release builds get real values injected by GoReleaser (see `.goreleaser.yml`).
-
-- Check version:
-  ```bash
-  ./sdexmon --version
-  ```
-
-- Format and basic lint:
-  ```bash
-  go fmt ./...
-  go vet ./...
-  ```
-
-- Tests:
-  - All tests (none exist yet; for when tests are added):
-    ```bash
-    go test ./...
-    ```
-  - Single test by name:
-    ```bash
-    go test -run '^TestName$' ./...
-    ```
-
-- Dependency tidy (useful after module changes):
-  ```bash
-  go mod tidy
-  ```
-
-## Environment
-
-These environment variables are read at runtime:
-- **Horizon REST**
-  - `HORIZON_URL`: Horizon endpoint for REST reads (order books, trades). Defaults to `https://horizon.stellar.org` (public mainnet).
-- **Default pair** (optional, allows skipping service selection)
-  - `BASE_ASSET`, `QUOTE_ASSET`: `native` or `CODE:ISSUER` (e.g., `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`). If set, app starts directly at Pair Info screen.
-- **Liquidity pool** (optional)
-  - `LP_POOL_ID`: Force specific pool ID (otherwise auto-resolved from liquidityPoolIDs map)
-- **Debug**
-  - `DEBUG`: Set to `true` or `1` to enable debug mode with extra logging and `z` key to toggle debug screens
-
-**Note**: The `run` script automatically loads `.env` if present.
-
-## Architecture and data flow
-
-- Bubble Tea program in `main.go`
-  - **Routing**: State machine with 6 screens (Landing, Pair Info, Pair Debug, Pair Input, Upgrade, Maintenance)
-  - **Model** holds: current screen, selected assets, Horizon order book/trades, trade cursor, LP metrics, UI state, version info
-  - **Startup**:
-    - `main()` checks the GitHub API for the latest release and passes the result into the model
-    - If a newer release exists (and not in `--display` mode), the app opens on the Upgrade screen; `esc` continues into the app
-    - When base/quote are set, schedules three tickers (order book, trades, LP)
-  - **Update**: Screen-based navigation state machine
-    - Upgrade: `enter` runs the installer via `tea.ExecProcess` (the TUI quits afterwards since the binary was replaced), `esc` returns to the previous screen, `q`/`ctrl+c` always quits
-    - Landing: Displays sdexmon ASCII art with version and commit info + pair selector popup
-    - Pair screens: Horizon polling via `fetchOrderbookCmd`, `fetchTradesCmd`, `resolveAndFetchLPCmd`
-    - Maintenance: sub-state machine in `maintenance_update.go`; async asset search and market lookups arrive as `models.AssetSearchResultsMsg` / `models.ConfirmationDataMsg` / `models.MaintenanceErrMsg` and are routed from the top-level `Update`
-  - **View**: Router switches on currentScreen to render appropriate view
-    - Upgrade: Centered amber notice box with version info and upgrade instructions
-    - Landing: sdexmon ASCII branding with version display (top-left)
-    - All other screens: SCAR AQUILA header, subtitle, content, context-aware footer
-    - Pair Info: Three panels (Order Book, Trades, Liquidity Pool) + Exposure panels
-
-## Navigation Flow
-
-```
-./run -> Landing (with Pair Selector Popup)
-         |- Select Pair -> Pair Info <-> Pair Debug
-         |- Custom Input -> Pair Info <-> Pair Debug
-         |- m -> Maintenance -> Add / Remove / List
+go test -race ./...              # what CI runs
+go test -run '^TestName$' ./...  # single test
+go mod tidy                      # after module changes
 ```
 
-## UI Controls
+Release builds inject version information; plain builds report
+`dev (build unknown)`:
 
-The `u: upgrade` shortcut is only shown and only active while the startup check
-found a newer release. It is available on the Landing, Pair Info, and Pair Debug
-screens.
-
-### Landing Screen
-- `enter` (⏎): Open pair selector popup
-- `m`: Open pair maintenance
-- `u`: Open upgrade notice (only when an update is available)
-- `q`: Quit
-
-### Pair Selector Popup (from Landing)
-- `↑/↓`: Navigate pairs
-- `enter`: Select pair (start monitoring)
-- `esc`: Close popup
-- `q`: Quit
-
-### Pair Input (Custom Entry)
-- `tab`: Switch base/quote fields
-- `enter`: Apply and start monitoring
-- `esc`: Back to landing
-- `q`: Quit
-
-### Pair Info
-- `p`: Open pair selector popup
-- `d`: Toggle debug detail view
-- `m`: Open pair maintenance
-- `u`: Open upgrade notice (only when an update is available)
-- `q`: Quit
-
-### Pair Debug Detail
-- `d`: Back to pair info
-- `u`: Open upgrade notice (only when an update is available)
-- `q`: Quit
-
-### Upgrade Notice
-- `enter`: Run the installer now (app exits afterwards; restart to use the new build)
-- `esc`: Continue on the current version
-- `q`: Quit
-
-### Maintenance (from Landing or Pair Info with `m`)
-- `1`: Add asset pair (pick a search source -> pick asset A -> pick a search source -> pick asset B -> confirm)
-- `2`: Remove asset pair (pick pair -> confirm with `y`/`n`)
-- `3`: View configured pairs (read-only, `↑/↓` to scroll)
-- `esc`: Back one step, and back to Landing from the menu
-- `q`: Quit, except while a search field has focus (use `ctrl+c` there)
-
-### Asset Search Source (per asset, while adding a pair)
-- `1`: Domain search - reads `https://<domain>/.well-known/stellar.toml` (SEP-1)
-- `2`: Asset search - fuzzy stellar.expert lookup by code or name
-- `3`: stellar.expert Top 50 - most active assets on the network
-- `↑/↓`: Move the highlight, `enter`: Choose, `esc`: Back
-
-## Trading Pairs Management
-
-**IMPORTANT:** `~/.config/sdexmon/config.yaml` is the source of truth at runtime.
-`loadConfiguration()` builds `configuredPairs` and `liquidityPoolIDs` from its
-`pairs:` entries. The `curatedPairs` / `curatedAssets` / `fallbackLiquidityPoolIDs`
-tables in `cmd/sdexmon/main.go` are only fallbacks, used when the config fails to
-load or contains no usable pairs. `internal/models/constants.go` is **not** in the
-load path.
-
-### In-app (preferred)
-
-Press `m` on the Landing or Pair Info screen:
-- **Add**: choose a search source for each asset, pick asset A and asset B,
-  review the market summary, then confirm. Requires network access. None of the
-  sources list native XLM, so it cannot be added this way.
-- **Remove**: pick a pair and confirm. Matching is issuer-aware and orientation
-  agnostic, so BASE/QUOTE and QUOTE/BASE both resolve to the same entry.
-- **List**: read-only view of every configured pair with issuers and pool IDs.
-
-Both mutations write the file and reload it immediately, so the pair selector
-updates without a restart.
-
-#### Asset search sources
-
-**IMPORTANT:** an asset code proves nothing about who issued it, so every result
-row shows its home domain and the selection and confirmation screens always spell
-out the issuer.
-
-- **Domain search (SEP-1)** is authoritative and the default. It reads
-  `https://<domain>/.well-known/stellar.toml` and lists only the `[[CURRENCIES]]`
-  that domain publishes itself. Entries with `status = "dead"`, a `code_template`
-  or a missing/invalid issuer are dropped; per-currency `toml` links are followed.
-  Only when the file cannot be fetched does it fall back to stellar.expert, and
-  then only to issuers whose home domain matches exactly.
-  Do NOT reintroduce the old behaviour of passing a domain to the fuzzy
-  `?search=` endpoint: it matches substrings and returned lookalike assets from
-  unrelated issuers.
-- **Asset search** is the fuzzy stellar.expert `?search=` lookup, for finding an
-  asset when the domain is unknown. Results are ranked by home domain presence
-  and trustline count, and the trustline count is shown as a sanity signal.
-- **Top 50** is `https://api.stellar.expert/explorer/public/asset-list/top50`,
-  a metrics-based ranking that stellar.expert explicitly does not endorse.
-
-### By hand
-
-Edit `~/.config/sdexmon/config.yaml`:
-```yaml
-pairs:
-  - name: XLM/USDC
-    base: XLM:native
-    quote: USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
-    lp: a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088
-    favorite: true
-    show_decimals: 7
-```
-`base`/`quote` accept `native`, `XLM:native` or `CODE:ISSUER`. `lp` is optional;
-when omitted the pool is resolved from Horizon at runtime.
-
-### Finding Required Data
-
-- **Asset Issuers**: Use stellar.expert asset search
-- **Liquidity Pool IDs**: Use stellar.expert liquidity pools section
-- **Validation**: Asset codes must be 1-12 chars A-Z/0-9, issuer addresses 56 chars starting with 'G'
-
-## Data Sources
-
-- **User config** (`~/.config/sdexmon/config.yaml`): the pairs actually shown in
-  the selector, plus per-pair LP IDs, favourites and decimal preferences
-- **Fallback tables** (in `cmd/sdexmon/main.go`, used only when the config yields
-  no pairs):
-  - `curatedAssets`: XLM, USDZ, ZARZ, EURZ, XAUZ, BTCZ, USDC with issuer addresses
-  - `curatedPairs`: Predefined trading pairs
-  - `fallbackLiquidityPoolIDs`: Static map of pool IDs for known pairs (bidirectional)
-
-- **Rendering/layout**:
-  - Fixed‑width layout designed for ~140×60
-  - All screens: Header + Subtitle + Content + Footer
-  - Pair Info: Order Book (left) + Trades (right) / Liquidity Pool (full width)
-  - Decimal alignment: 2–7 places with space separators
-
-## Stellar-Specific Guidelines
-
-### Decimal Precision
-- **CRITICAL:** All Stellar transactions and amounts MUST use **7 or fewer decimal places**
-- Display amounts with at least 2 decimal places, up to 7 when needed
-- Never truncate or round beyond 7 decimals
-
-### API Endpoint
-- Default: `https://horizon.stellar.org` (public mainnet)
-- Preferred for production: ValidationCloud endpoint at `https://mainnet.stellar.validationcloud.io/v1/jcRGf8fyg_vHRumAMzbD0uENOzQ20kXYtV65DX_ly3w`
-- Set via `HORIZON_URL` environment variable
-- Prefer MAINNET for development with small real amounts
-
-## Project Structure
-
-Follows standard Go project layout:
-
-```
-sdexmon/
-├── cmd/sdexmon/              # Main application
-│   ├── main.go               # Entry point (~2700 lines)
-│   ├── maintenance_update.go # Maintenance key handling and commands
-│   ├── maintenance_view.go   # Maintenance screen renderers
-│   ├── maintenance_test.go   # Maintenance routing and removal tests
-│   └── upgrade_test.go       # Upgrade notice tests
-├── internal/                 # Private packages
-│   ├── models/               # Data structures
-│   │   ├── types.go          # Model, ScreenState, Messages
-│   │   ├── constants.go      # Curated assets, pairs, pool IDs
-│   │   └── maintenance.go    # Maintenance mode types
-│   ├── config/               # Configuration
-│   │   ├── config.go         # Environment & logging
-│   │   ├── assets.go         # Asset parsing utilities
-│   │   └── user_config.go    # User configuration handling
-│   ├── ui/                   # UI components
-│   │   └── upgrade.go        # Upgrade notice screen renderer
-│   ├── version/              # Version management
-│   │   ├── checker.go        # GitHub release checker
-│   │   └── checker_test.go   # Version comparison tests
-│   └── stellar/              # Stellar API helpers
-│       ├── confirmation.go   # Asset confirmation
-│       ├── expert.go         # stellar.expert search and Top 50 client
-│       ├── toml.go           # SEP-1 stellar.toml resolver (domain search)
-│       └── toml_test.go      # stellar.toml parsing and validation tests
-├── docs/                     # Project documentation
-│   ├── MAINTENANCE_MODE.md   # Legacy maintenance mode notes
-│   ├── MIGRATION.md          # Pre-wrapper upgrade guide
-│   ├── ROUTING_IMPLEMENTATION.md # Routing system documentation
-│   └── raspberry-pi.md       # Raspberry Pi deployment notes
-├── go.mod                    # Module: github.com/sdexmon/sdexmon
-├── go.sum                    # Dependencies
-├── run                       # Launcher script
-├── install.sh                # Installation script
-├── tui                       # Pre-compiled binary
-└── WARP.md                   # This file
+```bash
+go build -ldflags="\
+  -X main.appVersion=$(git describe --tags --always) \
+  -X main.gitCommit=$(git rev-parse --short HEAD)" \
+  -o sdexmon ./cmd/sdexmon
 ```
 
-## Known Issues & Technical Debt
+`sdexmon --version` prints `<version> (build <commit>)` and exits.
 
-1. **Code organization:** Main business logic still in single file
-   - All TUI code (~2085 lines) in `cmd/sdexmon/main.go`
-   - Should be split into: `internal/ui/`, `internal/stellar/`, `internal/format/`
-   - Created packages (`models`, `config`) are first step
-   - Further refactoring recommended but not blocking
+IMPORTANT: `README.ansi` is generated. After editing `README.md`, run
+`make readme-gen` and commit both files, or `make readme-check` will fail.
 
-2. **Thin test coverage:** Only targeted regression tests exist
-   - Covered: upgrade notice, maintenance routing/removal, search source
-     selection, stellar.toml parsing, config pair CRUD, version comparison,
-     order book request shape, layout helpers
-   - Missing: broad view snapshots and mocked stellar.expert asset search
-   - Should add: unit tests, mocked API tests, format tests
+## Repository layout
 
-## Troubleshooting
+```
+cmd/sdexmon/
+  main.go                 entry point, model, update, views, Horizon calls
+  maintenance_update.go   maintenance key handling and commands
+  maintenance_view.go     maintenance screen renderers
+  *_test.go               layout, order book request, maintenance, upgrade
+internal/
+  config/                 YAML config, asset parsing, pair CRUD, debug logger
+  models/maintenance.go   maintenance state machine types
+  models/types.go         DEAD CODE, see below
+  models/constants.go     DEAD CODE, see below
+  stellar/                stellar.toml resolver, stellar.expert client
+  ui/upgrade.go           upgrade notice renderer
+  version/checker.go      GitHub release check and semver comparison
+docs/                     documentation, see docs/README.md
+packaging/systemd/        sdexmon.service unit
+scripts/gen-readme-ansi.py
+```
 
-### Wrong landing page after install
-If you see "SCAR AQUILA" and "Service Selection" instead of the "sdexmon_" landing page:
-- This was a build issue in early releases (v1.0.0-v1.0.3 had incorrect goreleaser config)
-- Solution: Reinstall with the latest version (v0.1.1+)
-  ```bash
-  curl -sSL https://raw.githubusercontent.com/sdexmon/sdexmon/main/install.sh | bash
-  ```
+## Environment variables
 
-### Version history note
-Versions v1.0.0 through v1.0.3 were released with incorrect build configuration and have been deprecated.
-The correct versioning continues from v0.1.0 → v0.1.1+
+- `HORIZON_URL` -- Horizon endpoint. Default `https://horizon.stellar.org`.
+- `DEBUG` -- `true` or `1` enables debug mode.
+- `BASE_ASSET`, `QUOTE_ASSET` -- `native`, `XLM`, `XLM:native`, or
+  `CODE:ISSUER`. These preselect the highlighted pair. They only cause a jump
+  straight to Pair Info in `display` mode.
+- `LP_POOL_ID` -- force a specific pool, applied to every pair. Debugging aid.
 
-## Go Coding Standards
+The `run` script loads `.env` if present.
 
-### Naming Conventions
-- **Packages:** lowercase, single word (e.g., `stellar`, `ui`, `orderbook`)
-- **Files:** snake_case (e.g., `order_book.go`, `liquidity_pool.go`)
-- **Exported:** PascalCase (e.g., `OrderBook`, `FetchTrades()`)
-- **Unexported:** camelCase (e.g., `parseResponse`, `apiClient`)
-- **Interfaces:** PascalCase with "er" suffix when possible (e.g., `Trader`, `Fetcher`)
+## Screens and keys
 
-### Code Organization Principles
-- Keep `main.go` minimal - only application initialization
-- Group related functionality in packages
-- Use composition over inheritance
-- Handle all errors explicitly
-- Always use `context.Context` for cancellation and timeouts
+Screens: Landing, Pair Info, Pair Debug, Pair Input, Upgrade, Maintenance. The
+pair selector is a popup overlay, not a screen.
 
-### Required Practices
-- Use `go fmt` and `go vet` before committing
-- Implement structured logging (currently using `log` package)
-- Add graceful shutdown handlers for cleanup
-- Mock external dependencies (Horizon API, stellar.expert) in tests
+```
+Landing      enter: pair selector   m: maintenance   u: upgrade*   q: quit
+Selector     up/down (k/j)  enter: select  s: search  esc: close   q: quit
+Pair Info    p: selector  d: debug detail  m: maintenance  u: upgrade*  q: quit
+Pair Debug   d: back   u: upgrade*   q: quit
+Upgrade      enter: run installer   esc: back   q: quit
+Maintenance  1: add   2: remove   3: list   esc: back   q: quit
+```
 
-## Future Refactoring Plan
+`*` The `u` shortcut exists and is advertised only while the startup check found
+a newer release.
 
-To align with Go best practices and team standards:
+`q` and `ctrl+c` quit everywhere, except that `q` types normally in a
+maintenance text field (`AcceptsTextInput`), where only `ctrl+c` quits.
 
-### Phase 1: Module & Build Fixes ✅
-1. ✅ Update `go.mod` module name to proper path
-2. ✅ Fix `.goreleaser.yml` to point to actual main location (`./cmd/sdexmon`)
-3. ✅ Verify builds work cross-platform
+Full reference: `docs/guide/usage.md`. State machine:
+`docs/architecture/screens-and-routing.md`.
 
-### Phase 2: Code Organization (Partially Complete)
-1. ✅ **Move main.go → cmd/sdexmon/main.go**
-2. 🟡 **Extract packages to internal/:** (Started)
-   - ❌ `internal/ui/` - Bubble Tea components, views, routing (TODO)
-   - ❌ `internal/stellar/` - Horizon client wrapper, API calls (TODO)
-   - ✅ `internal/models/` - Data structures (OrderBook, Trade, Liquidity)
-   - ✅ `internal/config/` - Environment variable handling
-3. ✅ **Maintain single entry point** in cmd/sdexmon/main.go that orchestrates packages
+## Trading pairs
 
-### Phase 3: Testing
-1. Add unit tests for data transformations
-2. Mock Horizon API responses for integration tests
-3. Table-driven tests for price formatting and decimal handling
-4. Target 80%+ code coverage
+IMPORTANT: `~/.config/sdexmon/config.yaml` is the source of truth at runtime.
+`loadConfiguration()` in `cmd/sdexmon/main.go` builds `configuredPairs` and
+`liquidityPoolIDs` from its `pairs:` entries.
+
+The `curatedPairs`, `curatedAssets` and `fallbackLiquidityPoolIDs` tables in
+`cmd/sdexmon/main.go` are fallbacks only, used when the config fails to load or
+yields no usable pairs.
+
+IMPORTANT: `internal/models/constants.go` is NOT in the load path. Adding pairs
+there has no effect.
+
+Prefer the in-app maintenance screen (`m`) over hand editing: it validates
+issuers, rejects duplicates, and reloads immediately without a restart.
+
+Details: `docs/guide/pair-management.md` and
+`docs/architecture/configuration-system.md`.
+
+### Asset trust
+
+IMPORTANT: an asset code proves nothing about who issued it. Every result row
+shows its home domain, and the selection and confirmation screens spell out the
+issuer.
+
+Domain search reads `https://<domain>/.well-known/stellar.toml` and lists only
+what that domain publishes about itself. It is the only authoritative source.
+Entries with `status = "dead"`, a `code_template`, or an invalid issuer are
+dropped; per-currency `toml` links are followed.
+
+IMPORTANT: do NOT reintroduce the old behaviour of passing a domain to the fuzzy
+stellar.expert `?search=` endpoint. It matches substrings and returned lookalike
+assets from unrelated issuers. The stellar.expert fallback for an unreachable
+stellar.toml filters to an exact home domain match.
+
+## Data sources and polling
+
+Horizon: order books (limit 200), trades (bootstrap 50 descending, then paged
+from a cursor at limit 200, capped at 120 kept), liquidity pool discovery and
+detail, and `/fee_stats` for the footer capacity indicator.
+
+stellar.expert (`https://api.stellar.expert/explorer/public`): liquidity pool
+fee and volume enrichment (`/liquidity-pool/<id>`, amounts in stroops), fuzzy
+asset search (`/asset?search=`), and `/asset-list/top50`. Horizon is the
+fallback for pool reserves when stellar.expert fails.
+
+Intervals: order book 1200 ms, trades 1200 ms, liquidity pool 30 s, network
+stats 10 s, display rotation `--rotate` (default 30 s, 0 disables).
+
+## Rendering constraints
+
+These are load-bearing. Breaking them produces a garbled alternate screen.
+
+- Never write into the last terminal column. Terminals auto-wrap, which shifts
+  every following line.
+- Never emit more lines than the terminal has. Content is hard-truncated in
+  `pairInfoView` for this reason.
+- Never write to stderr while the TUI is running. `setupDebugLogger` redirects
+  `log` into an in-memory ring buffer of the last 100 lines, restored on exit.
+
+The layout targets 140x60. `fitPanelRows` shrinks the exposure list before the
+order book; depth 7 down to 3, exposure 10 down to 3. Below 102 columns the
+paired panels stack vertically. Content width is capped at 180.
+
+## Stellar rules
+
+- Amounts MUST use 7 or fewer decimal places. Display at least 2, up to 7.
+- Thousand separators are spaces, not commas.
+- Do not assume a currency symbol.
+- The issuer is part of the asset identity. Never compare or deduplicate assets
+  on code alone.
+- Development runs against mainnet with the public Horizon endpoint.
+
+## Go coding standards
+
+- Packages: lowercase, single word. Files: snake_case.
+- Exported: PascalCase. Unexported: camelCase. Interfaces: "er" suffix where it
+  reads naturally.
+- Handle all errors explicitly. Use `context.Context` for outbound timeouts.
+- Prefer composition over inheritance.
+- Run `go fmt` and `go vet` before committing.
+- Comments should explain intent and constraints, not restate the code.
+
+## Documentation rules
+
+- Long-form docs go in `docs/<category>/`, not the repository root. Only
+  `README.md`, `README.ansi`, `WARP.md` and `LICENSE` belong at the root.
+- Markdown uses plain ASCII. No emoji, no Unicode arrows or dashes. Use `->`,
+  `--`, `+/-`, `>=`.
+- Do not create point-in-time status or summary documents. Describe the current
+  state instead.
+- On macOS, never use `sed` for in-place edits; BSD `sed` corrupts multi-byte
+  UTF-8. Use Python with `encoding='utf-8'`.
+
+## Known technical debt
+
+- `cmd/sdexmon/main.go` is roughly 3 100 lines and still holds the model, the
+  update loop, every view, and the Horizon integration. The remaining split
+  would be `internal/stellar` for the Horizon wrapper and `internal/ui` for the
+  views, styles and formatting.
+- `internal/models/types.go` and `internal/models/constants.go` are dead code.
+  Nothing imports `models.Model`, `models.ScreenState`, `models.CuratedAssets`,
+  `models.CuratedPairs` or `models.LiquidityPoolIDs`; `cmd/sdexmon/main.go`
+  declares its own equivalents. Only `internal/models/maintenance.go` is live.
+- `config.GetBaseAsset`, `config.GetQuoteAsset` and `config.GetLPPoolID` are
+  unused; `main.go` reads those environment variables directly.
+- `config.ParseAsset` accepts `XLM:native`; the local `parseAsset` in `main.go`
+  does not. Two parsers with different behaviour still exist.
+- The Pair Input screen has a handler and a view but no key binding routes to
+  it, so it is unreachable.
+- `q` still quits from the pair selector search field, so search terms
+  containing `q` cannot be typed there.
+- Test coverage is targeted, not broad. Missing: view snapshots and mocked
+  stellar.expert searches.
+
+## Version history
+
+Current tags run v0.1.0 through v0.2.2. Releases v1.0.0 through v1.0.3 were
+published with a broken build configuration and have been deprecated; the valid
+sequence continues from v0.1.0 upward.
+
+## Documentation map
+
+```
+docs/README.md                              index
+docs/guide/installation.md                  install, wrapper, uninstall
+docs/guide/configuration.md                 env vars, flags, config schema
+docs/guide/usage.md                         every screen and key
+docs/guide/pair-management.md               add, remove, list pairs
+docs/guide/upgrading.md                     update check and upgrade paths
+docs/guide/migration.md                     pre-v0.1.1 installations
+docs/deployment/raspberry-pi.md             kiosk board with systemd
+docs/architecture/overview.md               layout, data flow, tech debt
+docs/architecture/screens-and-routing.md    state machines
+docs/architecture/configuration-system.md   YAML schema, decimals
+docs/development/building-and-testing.md    build, test, standards
+docs/development/releasing.md               CI, GoReleaser, installer contract
+```
 
 ## License
 
-Custom non-commercial license (see LICENSE file):
-- Personal, non-commercial use allowed
-- Attribution required to Daniel van Tonder
-- Commercial use prohibited without written consent
+Custom non-commercial license, see `LICENSE`. Personal non-commercial use is
+allowed with attribution to the original author. Commercial use, distribution
+and sublicensing require prior written consent.
