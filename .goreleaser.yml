@@ -16,7 +16,7 @@ archives:
     files:
       - README.md
       - LICENSE
-      - docs/raspberry-pi.md
+      - docs/deployment/raspberry-pi.md
       - packaging/systemd/sdexmon.service
 
 checksum:
